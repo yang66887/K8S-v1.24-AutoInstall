@@ -21,16 +21,16 @@
   - Keepalived Version(Ubuntu): v2.2.4
 
 - 镜像版本：
-  - pause Version: v3.6
-  - flannel Version: v0.17.0
-  - flannel-cni-plugin Version: v1.0.1
-  - coredns Version: v1.9.4
-  - metrics-server Version: v0.6.2
-  - kuboard Version: v2.0.5.5
-  - dashboard Version: v2.5.1
-  - metrics-scraper Version: v1.0.7
+  - registry.k8s.io/pause Version: v3.6
+  - rancher/mirrored-flannelcni-flannel Version: v0.17.0
+  - rancher/mirrored-flannelcni-flannel-cni-plugin Version: v1.0.1
+  - coredns/coredns Version: v1.9.4
+  - k8s.gcr.io/metrics-server/metrics-server Version: v0.6.2
+  - eipwork/kuboard Version: v2.0.5.5
+  - kubernetesui/dashboard Version: v2.5.1
+  - kubernetesui/metrics-scraper Version: v1.0.7
   - stakater/reloader Version: v0.0.113
-  - nfs-subdir-external-provisioner Version: v4.0.2
+  - k8s.gcr.io/sig-storage/nfs-subdir-external-provisioner Version: v4.0.2
 
 ## 配置文件：部署前先配置 config 文件，参数说明如下
 - 设备参数：每个 HOSTx 代表1台设备，其后括号内为该设备相关信息，多台设备则定义多个 HOSTx
