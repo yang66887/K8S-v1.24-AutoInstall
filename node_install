@@ -1,0 +1,395 @@
+#!/bin/bash
+
+Node_Log='/dev/null'
+
+docker_install(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password=$3
+  dst_release=$4
+
+  # 本机安装
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    # docker配置
+    [ ! -d /etc/docker ] && mkdir /etc/docker
+    cp -f temp_install/node/daemon.json /etc/docker/daemon.json
+    bash <temp_install/node/sysctl.config
+    # 安装docker
+    case ${dst_release} in
+      CentOS7_9)
+        mkdir temp_install/node/${dst_host}.rpms
+        cat rpms/docker-ce/docker-ce.tar.gz0*|tar zx -C temp_install/node/${dst_host}.rpms
+        bash dep_check temp_install/node/${dst_host}.rpms
+        rpm -Uvh temp_install/node/${dst_host}.rpms/*.rpm &>/dev/null
+        docker_install_check=$?
+        log_result "安装Docker-ce" "${docker_install_check}"
+        systemctl enable --now docker &>/dev/null
+        docker_start_check=$?
+        log_result "启动Docker-ce" "${docker_start_check}"
+        ;;
+      Ubuntu22_04)
+        mkdir temp_install/node/${dst_host}.debs
+        cat debs/docker-ce/docker-ce.tar.gz0*|tar zx -C temp_install/node/${dst_host}.debs
+        dpkg -i temp_install/node/${dst_host}.debs/*.deb &>/dev/null
+        docker_install_check=$?
+        log_result "安装Docker-ce" "${docker_install_check}"
+        systemctl enable --now docker &>/dev/null
+        docker_start_check=$?
+        log_result "启动Docker-ce" "${docker_start_check}"
+        sed -ri '/^.*127.0.0.*/d' /run/systemd/resolve/resolv.conf
+        ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+        dns_check=$?
+        log_result "调整DNS" "${dns_check}"
+    esac
+    # 导入docker镜像
+    if [ ${docker_start_check} -eq 0 ];then
+      docker load <images/coredns.tar.gz &>/dev/null &&\
+      docker load <images/dashboard.tar.gz &>/dev/null &&\
+      docker load <images/metrics-scraper.tar.gz &>/dev/null &&\
+      docker load <images/metrics-server.tar.gz &>/dev/null &&\
+      docker load <images/mirrored-flannelcni-flannel.tar.gz &>/dev/null &&\
+      docker load <images/mirrored-flannelcni-flannel-cni-plugin.tar.gz &>/dev/null &&\
+      docker load <images/kuboard.tar.gz &>/dev/null &&\
+      docker load <images/pause.tar.gz &>/dev/null &&\
+      docker load <images/reloader.tar.gz &>/dev/null &&\
+      docker load <images/nfs-subdir-external-provisioner.tar.gz &>/dev/null
+      images_load_check=$?
+      log_result "导入Docker镜像" "${images_load_check}"
+    else
+      images_load_check=1
+      log_result "导入Docker镜像" "${images_load_check}"
+    fi
+  else
+  # 远程安装
+    case ${dst_release} in
+      CentOS7_9)
+        mkdir temp_install/node/${dst_host}.rpms
+        cat rpms/docker-ce/docker-ce.tar.gz0*|tar zx -C temp_install/node/${dst_host}.rpms
+        expect_ssh "scp -pq -P${dst_port} dep_check temp_install/node/${dst_host}.rpms/*.rpm temp_install/node/{daemon.json,sysctl.config} root@${dst_host}:/root" "${dst_password}" "${Node_Log}"
+        docker_scp_check=$?
+        if [ ${docker_scp_check} -eq 0 ];then
+          expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /root;test ! -d /etc/docker && mkdir /etc/docker;mv -f daemon.json /etc/docker/daemon.json;bash <sysctl.config;bash dep_check;rpm -Uvh *.rpm && systemctl enable --now docker && rm -f dep_check *.rpm sysctl.config'" "${dst_password}" "${Node_Log}"
+          docker_install_check=$?
+          docker_start_check=${docker_install_check}
+          log_result "安装Docker-ce" "${docker_install_check}"
+          log_result "启动Docker-ce" "${docker_start_check}"
+        else
+          docker_install_check=1
+          docker_start_check=1
+          echo 'Docker-ce安装包传输失败'
+        fi
+        ;;
+      Ubuntu22_04)
+        mkdir temp_install/node/${dst_host}.debs
+        cat debs/docker-ce/docker-ce.tar.gz0*|tar zx -C temp_install/node/${dst_host}.debs
+        expect_ssh "scp -pq -P${dst_port} temp_install/node/${dst_host}.debs/*.deb temp_install/node/{daemon.json,sysctl.config} root@${dst_host}:/root" "${dst_password}" "${Node_Log}"
+        docker_scp_check=$?
+        if [ ${docker_scp_check} -eq 0 ];then
+          expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /root;test ! -d /etc/docker && mkdir /etc/docker;mv -f daemon.json /etc/docker/daemon.json;bash <sysctl.config;dpkg -i *.deb && systemctl enable --now docker && rm -f *.deb sysctl.config'" "${dst_password}" "${Node_Log}"
+          docker_install_check=$?
+          docker_start_check=${docker_install_check}
+          log_result "安装Docker-ce" "${docker_install_check}"
+          log_result "启动Docker-ce" "${docker_start_check}"
+        else
+          docker_install_check=1
+          docker_start_check=1
+          echo 'Docker-ce安装包传输失败'
+        fi
+        expect_ssh "ssh -p${dst_port} root@${dst_host} 'sed -ri '/^.*127.0.0.*/d' /run/systemd/resolve/resolv.conf;ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf'" "${dst_password}" "${Node_Log}"
+        dns_check=$?
+        log_result "调整DNS" "${dns_check}"
+    esac
+    # 导入docker镜像
+    if [ ${docker_start_check} -eq 0 ];then
+      expect_ssh "scp -pq -P${dst_port} images/{coredns.tar.gz,kuboard.tar.gz,dashboard.tar.gz,metrics-scraper.tar.gz,metrics-scraper.tar.gz,metrics-server.tar.gz,mirrored-flannelcni-flannel.tar.gz,mirrored-flannelcni-flannel-cni-plugin.tar.gz,pause.tar.gz,reloader.tar.gz,nfs-subdir-external-provisioner.tar.gz} root@${dst_host}:/root" "${dst_password}" "${Node_Log}"
+      images_scp_check=$?
+      if [ ${images_scp_check} -eq 0 ];then
+        expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /root && docker load <coredns.tar.gz && docker load <kuboard.tar.gz && docker load <dashboard.tar.gz && docker load <metrics-scraper.tar.gz && docker load <metrics-server.tar.gz && docker load <mirrored-flannelcni-flannel.tar.gz && docker load <mirrored-flannelcni-flannel-cni-plugin.tar.gz && docker load <pause.tar.gz && docker load <reloader.tar.gz && docker load <nfs-subdir-external-provisioner.tar.gz && rm -f *.tar.gz'" "${dst_password}" "${Node_Log}"
+        images_load_check=$?
+        log_result "导入Docker镜像" "${images_load_check}"
+      else
+        images_load_check=1
+        log_result "导入Docker镜像" "${images_load_check}"
+      fi
+    else
+      images_load_check=1
+      log_result "导入Docker镜像" "${images_load_check}"
+    fi
+  fi
+}
+
+cni_plugins(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password=$3
+
+  # 本机安装
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    [ ! -d /etc/cni/net.d ] && mkdir -p /etc/cni/net.d
+    [ ! -d /opt/cni/bin ] && mkdir -p /opt/cni/bin
+    cp -f binaries/cni-plugins/cni-plugins.tar.gz0* /opt/cni/bin
+    cd /opt/cni/bin
+    cat cni-plugins.tar.gz0*|tar zx &&\
+    rm -f cni-plugins.tar.gz0* &&\
+    chmod 755 /opt/cni/bin/*
+    cni_plugins_install_check=$?
+    log_result "安装CNI-Plugins" "${cni_plugins_install_check}"
+    cd - &>/dev/null
+  else
+  # 远程安装
+    expect_ssh "scp -pq -P${dst_port} binaries/cni-plugins/cni-plugins.tar.gz0* root@${dst_host}:/root" "${dst_password}" "${Node_Log}"
+    cni_plugins_scp_check=$?
+    if [ ${cni_plugins_scp_check} -eq 0 ];then
+      expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /root;test ! -d /etc/cni/net.d && mkdir -p /etc/cni/net.d;test ! -d /opt/cni/bin && mkdir -p /opt/cni/bin;mv cni-plugins.tar.gz0* /opt/cni/bin && cd /opt/cni/bin && cat cni-plugins.tar.gz0*|tar zx && rm -f cni-plugins.tar.gz0* && chmod 755 *'" "${dst_password}" "${Node_Log}"
+      cni_plugins_install_check=$?
+      log_result "安装CNI-Plugins" "${cni_plugins_install_check}"
+    else
+      cni_plugins_install_check=1
+      echo 'CNI-Plugins安装包传输失败'
+    fi
+  fi
+}
+
+cri_dockerd(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password=$3
+
+  # 本机安装
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    cp -f binaries/cri-dockerd/cri-dockerd /usr/local/bin/cri-dockerd &&\
+    chmod 755 /usr/local/bin/cri-dockerd &&\
+    cp -f temp_install/node/cri-dockerd.conf /data/kubernetes/cfg/cri-dockerd.conf &&\
+    cp -f temp_install/node/cri-dockerd.service /usr/lib/systemd/system/cri-dockerd.service &&\
+    systemctl enable --now cri-dockerd.service &>/dev/null
+    cri_dockerd_install_check=$?
+    log_result "安装CRI-Dockerd" "${cri_dockerd_install_check}"
+  else
+  # 远程安装
+    expect_ssh "scp -pq -P${dst_port} binaries/cri-dockerd/cri-dockerd temp_install/node/{cri-dockerd.conf,cri-dockerd.service} root@${dst_host}:/root" "${dst_password}" "${Node_Log}"
+    cri_dockerd_scp_check=$?
+    if [ ${cri_dockerd_scp_check} -eq 0 ];then
+      expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /root && mv -f cri-dockerd.conf /data/kubernetes/cfg/cri-dockerd.conf && mv -f cri-dockerd.service /usr/lib/systemd/system/cri-dockerd.service && mv -f cri-dockerd /usr/local/bin/cri-dockerd && chmod 755 /usr/local/bin/cri-dockerd && systemctl enable --now cri-dockerd'" "${dst_password}" "${Node_Log}"
+      cri_dockerd_install_check=$?
+      log_result "安装CRI-Dockerd" "${cri_dockerd_install_check}"
+    else
+      cri_dockerd_install_check=1
+      echo 'CRI-Dockerd安装包传输失败'
+    fi
+  fi
+}
+
+kubelet(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password=$3
+
+  # 本机部署
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    # 部署二进制程序文件
+    cp -f binaries/kubernetes/{kubelet,kubectl} /data/kubernetes/bin/ &&\
+    chmod 755 /data/kubernetes/bin/{kubelet,kubectl} &&\
+    ln -sf /data/kubernetes/bin/kubectl /usr/local/bin/kubectl
+    binaries_install_check=$?
+    log_result "部署Kubelet二进制程序文件" "${binaries_install_check}"
+    # 部署证书
+    cp -f temp_install/ca/{ca.pem,ca-key.pem} /data/kubernetes/ssl &&\
+    cp -f temp_install/master/ssl/{kubectl.pem,kubectl-key.pem} /data/kubernetes/ssl
+    ssl_install_check=$?
+    log_result "部署Kubelet证书" "${ssl_install_check}"
+    # 部署配置文件
+    cp -f temp_install/node/{kubelet-bootstrap.kubeconfig,kubelet.conf,kubelet.yaml} /data/kubernetes/cfg
+    config_install_check=$?
+    log_result "部署Kubelet配置文件" "${config_install_check}"
+    # 创建服务
+    cp -f temp_install/node/kubelet.service /usr/lib/systemd/system/kubelet.service
+    service_install_check=$?
+    log_result "创建Kubelet服务" "${service_install_check}"
+    # 启动服务
+    systemctl enable --now kubelet &>/dev/null
+    service_start_check=$?
+    log_result "启动Kubelet服务" "${service_start_check}"
+    # 配置kubectl
+    [ ! -d /root/.kube ] && mkdir /root/.kube
+    if [ ! -f /root/.kube/config ];then
+      cp -f temp_install/master/kube.config /root/.kube/config
+      kubectl_config_check=$?
+      log_result "配置kubectl" "${kubectl_config_check}"
+    else
+      kubectl_config_check=0
+      log_result "配置kubectl" "${kubectl_config_check}"
+    fi
+    # 批准节点加入集群
+    sleep 5
+    kubectl certificate approve $(kubectl get csr|grep "Pending$"|awk '{print $1}') &>/dev/null
+    sleep 5
+    kubectl certificate approve $(kubectl get csr|grep "Pending$"|awk '{print $1}') &>/dev/null
+    add_to_cluster_check=$?
+    log_result "Node: ${dst_host}加入集群" ${add_to_cluster_check}
+  # 远程部署
+  else
+    # 部署二进制程序文件
+    expect_ssh "scp -pq -P${dst_port} binaries/kubernetes/{kubelet,kubectl} root@${dst_host}:/data/kubernetes/bin/" "${dst_password}" "${Node_Log}" &&\
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'chmod 755 /data/kubernetes/bin/{kubelet,kubectl} && ln -sf /data/kubernetes/bin/kubectl /usr/local/bin/kubectl'" "${dst_password}" "${Node_Log}"
+    binaries_install_check=$?
+    log_result "部署Kubelet二进制程序文件" "${binaries_install_check}"
+    # 部署证书
+    expect_ssh "scp -pq -P${dst_port} temp_install/master/ssl/{ca.pem,ca-key.pem,kubectl.pem,kubectl-key.pem} root@${dst_host}:/data/kubernetes/ssl" "${dst_password}" "${Node_Log}"
+    ssl_install_check=$?
+    log_result "部署Kubelet证书" "${ssl_install_check}"
+    # 部署配置文件
+    expect_ssh "scp -pq -P${dst_port} temp_install/node/{kubelet-bootstrap.kubeconfig,kubelet.conf,kubelet.yaml} root@${dst_host}:/data/kubernetes/cfg" "${dst_password}" "${Node_Log}"
+    config_install_check=$?
+    log_result "部署Kubelet配置文件" "${config_install_check}"
+    # 创建服务
+    expect_ssh "scp -pq -P${dst_port} temp_install/node/kubelet.service root@${dst_host}:/usr/lib/systemd/system/kubelet.service" "${dst_password}" "${Node_Log}"
+    service_install_check=$?
+    log_result "创建Kubelet服务" "${service_install_check}"
+    # 启动服务
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'systemctl enable --now kubelet.service'" "${dst_password}" "${Node_Log}"
+    service_start_check=$?
+    log_result "启动Kubelet服务" "${service_start_check}"
+    # 配置kubectl
+    expect_ssh "scp -pq -P${dst_port} temp_install/master/kube.config root@${dst_host}:/root" "${dst_password}" "${Node_Log}" &&\
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /root;test ! -d /root/.kube && mkdir /root/.kube;test ! -f /root/.kube/config && cp -f kube.config /root/.kube/config'" "${dst_password}" "${Node_Log}" &&\
+    kubectl_config_check=$?
+    log_result "配置kubectl" "${kubectl_config_check}"
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /root;rm -f kube.config'" "${dst_password}" "${Node_Log}"
+    # 批准节点加入集群
+    if [ ! -f temp_install/node/kubectl.approve ];then
+      cat >temp_install/node/kubectl.approve <<EOF
+sleep 5
+kubectl certificate approve \$(kubectl get csr|grep "Pending\$"|awk '{print \$1}')
+sleep 5
+kubectl certificate approve \$(kubectl get csr|grep "Pending\$"|awk '{print \$1}')
+EOF
+    fi
+    expect_ssh "scp -pq -P${dst_port} temp_install/node/kubectl.approve root@${dst_host}:/root" "${dst_password}" "${Node_Log}" &&\
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /root && bash <kubectl.approve'" "${dst_password}" "${Node_Log}"
+    add_to_cluster_check=$?
+    log_result "Node: ${dst_host}加入集群" ${add_to_cluster_check}
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /root;rm -f kubectl.approve'" "${dst_password}" "${Node_Log}"
+  fi
+}
+
+kube_proxy(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password=$3
+
+  # 本机部署
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    # 部署二进制程序文件
+    cp -f binaries/kubernetes/kube-proxy /data/kubernetes/bin/ &&\
+    chmod 755 /data/kubernetes/bin/kube-proxy &&\
+    binaries_install_check=$?
+    log_result "部署Kube-proxy二进制程序文件" "${binaries_install_check}"
+    # 部署证书
+    cp -f temp_install/node/ssl/{kube-proxy.pem,kube-proxy-key.pem} /data/kubernetes/ssl
+    ssl_install_check=$?
+    log_result "部署Kube-proxy证书" "${ssl_install_check}"
+    # 部署配置文件
+    cp -f temp_install/node/{kube-proxy.conf,kube-proxy.yaml,kube-proxy.kubeconfig} /data/kubernetes/cfg
+    config_install_check=$?
+    log_result "部署Kube-proxy配置文件" "${config_install_check}"
+    # 创建服务
+    cp -f temp_install/node/kube-proxy.service /usr/lib/systemd/system/kube-proxy.service
+    service_install_check=$?
+    log_result "创建Kube-proxy服务" "${service_install_check}"
+    # 启动服务
+    systemctl enable --now kube-proxy &>/dev/null
+    service_start_check=$?
+    log_result "启动Kube-proxy服务" "${service_start_check}"
+  # 远程部署
+  else
+    # 部署二进制程序文件
+    expect_ssh "scp -pq -P${dst_port} binaries/kubernetes/kube-proxy root@${dst_host}:/data/kubernetes/bin/" "${dst_password}" "${Node_Log}" &&\
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'chmod 755 /data/kubernetes/bin/kube-proxy'" "${dst_password}" "${Node_Log}"
+    binaries_install_check=$?
+    log_result "部署Kube-proxy二进制程序文件" "${binaries_install_check}"
+    # 部署证书
+    expect_ssh "scp -pq -P${dst_port} temp_install/node/ssl/{kube-proxy.pem,kube-proxy-key.pem} root@${dst_host}:/data/kubernetes/ssl" "${dst_password}" "${Node_Log}"
+    ssl_install_check=$?
+    log_result "部署Kube-proxy证书" "${ssl_install_check}"
+    # 部署配置文件
+    expect_ssh "scp -pq -P${dst_port} temp_install/node/{kube-proxy.conf,kube-proxy.yaml,kube-proxy.kubeconfig} root@${dst_host}:/data/kubernetes/cfg" "${dst_password}" "${Node_Log}"
+    config_install_check=$?
+    log_result "部署Kube-proxy配置文件" "${config_install_check}"
+    # 创建服务
+    expect_ssh "scp -pq -P${dst_port} temp_install/node/kube-proxy.service root@${dst_host}:/usr/lib/systemd/system/kube-proxy.service" "${dst_password}" "${Node_Log}"
+    service_install_check=$?
+    log_result "创建Kube-proxy服务" "${service_install_check}"
+    # 启动服务
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'systemctl enable --now kube-proxy'" "${dst_password}" "${Node_Log}"
+    service_start_check=$?
+    log_result "启动Kube-proxy服务" "${service_start_check}"
+  fi
+}
+
+deploy(){
+  # 目标设备
+  dst_host=$1
+  host_name=$(grep '^HOST.*=(' config|grep ${dst_host}|awk -F= '{print $1}')
+  dst_port=$(eval echo \${"$host_name"[port]})
+  dst_password=$(eval echo \${"$host_name"[password]})
+  dst_release=$(eval echo \${"$host_name"[release]})
+
+  # 本机
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    # 创建工作目录
+    if [ ! -d /data/kubernetes ];then
+      mkdir -p /data/kubernetes/{bin,cfg,logs,ssl}
+      kubernetes_dir_check=$?
+      log_result "创建Kubernetes工作目录" "${kubernetes_dir_check}"
+    else
+      kubernetes_dir_check=0
+      log_result "创建Kubernetes工作目录" "${kubernetes_dir_check}"
+    fi
+  # 远程
+  else
+    # 创建工作目录
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'test -d /data/kubernetes'" "${dst_password}" "${Node_Log}"
+    kubernetes_dir_check=$?
+    if [ ${kubernetes_dir_check} -eq 0 ];then
+      log_result "创建Kubernetes工作目录" "${kubernetes_dir_check}"
+    else
+      expect_ssh "ssh -p${dst_port} root@${dst_host} 'mkdir -p /data/kubernetes/{bin,cfg,logs,ssl}'" "${dst_password}" "${Node_Log}"
+      kubernetes_dir_check=$?
+      log_result "创建Kubernetes工作目录" "${kubernetes_dir_check}"
+    fi
+  fi
+  if [ ${kubernetes_dir_check} -ne 0 ];then
+    echo "创建Kubernetes工作目录失败，取消部署" && exit 1
+  fi
+
+  docker_install ${dst_host} ${dst_port} ${dst_password} ${dst_release}
+  cni_plugins ${dst_host} ${dst_port} ${dst_password}
+  cri_dockerd ${dst_host} ${dst_port} ${dst_password}
+  kubelet ${dst_host} ${dst_port} ${dst_password}
+  kube_proxy ${dst_host} ${dst_port} ${dst_password}
+}
+
+case $1 in
+  --local)
+    echo "################## Node ${local_ip} Begin ########################"
+    deploy ${local_ip}
+    echo "################## Node ${local_ip} End ##########################"
+    echo
+    ;;
+  --cluster)
+    for Host in ${NODE[@]}
+    do
+      echo "################## Node ${Host} Begin ########################"
+      deploy ${Host}
+      echo "################## Node ${Host} End ##########################"
+      echo
+    done
+    ;;
+  *)
+    echo Error.
+esac

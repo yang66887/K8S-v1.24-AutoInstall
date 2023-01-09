@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# 设备参数
+declare -A HOST1 HOST2 HOST3 ... HOSTx
+HOST1=([name]="" [addr]="" [node]="" [port]="" [user]="root" [password]="" [if_name]=""  [release]="")
+HOST2=([name]="" [addr]="" [node]="" [port]="" [user]="root" [password]="" [if_name]="" [release]="")
+HOST3=([name]="" [addr]="" [node]="" [port]="" [user]="root" [password]="" [if_name]="" [release]="")
+...
+HOSTx=([name]="" [addr]="" [node]="" [port]="" [user]="root" [password]="" [if_name]="" [release]="")
+
+# Keepalived集群参数
+v_ip=''
+# 0-255
+virtual_router_id=
+
+# k8s集群参数，以下为默认值，如无必要请勿修改
+cluster_ip_range='10.0.0.0/16'
+cluster_ip='10.0.0.1'
+cluster_dns='10.0.0.2'
+cluster_cidr_range='10.244.0.0/16'
+cluster_cidr='10.244.0.1'
+node_port_range='30000-35000'
+docker0_bip='172.244.0.1/16'
+kuboard_port=30000
+dashboard_port=30001

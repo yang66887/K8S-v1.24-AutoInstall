@@ -1,0 +1,121 @@
+#!/bin/bash
+
+Pod_Log='/dev/null'
+
+apply_pod(){
+  # 目标设备
+  dst_host="$1"
+  host_name=$(grep ${dst_host} config|awk -F= '{print $1}')
+  dst_port="$(eval echo \${"$host_name"[port]})"
+  dst_password="$(eval echo \${"$host_name"[password]})"
+
+  # 本机部署
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    # kube-flannel
+    cp -f temp_install/node/kube-flannel.yml /data/kubernetes/cfg &&\
+    kubectl apply -f /data/kubernetes/cfg/kube-flannel.yml &>/dev/null
+    flannel_apply_check=$?
+    log_result "创建Pod: kube-flannel" "${flannel_apply_check}"
+    [ ${flannel_apply_check} -eq 0 ] && source pod_running_check kube-flannel
+    # coredns
+    cp -f temp_install/node/coredns.yml /data/kubernetes/cfg &&\
+    kubectl apply -f /data/kubernetes/cfg/coredns.yml &>/dev/null
+    coredns_apply_check=$?
+    log_result "创建Pod: coredns" "${coredns_apply_check}"
+    [ ${coredns_apply_check} -eq 0 ] && source pod_running_check coredns
+    # metrics-server
+    cp -f temp_install/node/metrics-server.yaml /data/kubernetes/cfg &&\
+    kubectl apply -f /data/kubernetes/cfg/metrics-server.yaml &>/dev/null
+    metrics_server_apply_check=$?
+    log_result "创建Pod: metrics-server" "${metrics_server_apply_check}"
+    [ ${metrics_server_apply_check} -eq 0 ] && source pod_running_check metrics_server
+    # reloader
+    cp -f temp_install/node/reloader.yml /data/kubernetes/cfg &&\
+    kubectl create namespace environment &>/dev/null &&\
+    kubectl apply -f /data/kubernetes/cfg/reloader.yml &>/dev/null
+    reloader_apply_check=$?
+    log_result "创建Pod: reloader" "${reloader_apply_check}"
+    [ ${reloader_apply_check} -eq 0 ] && source pod_running_check reloader
+    # nfs-subdir-external-provisioner
+    cp -f temp_install/nfs/nfs-subdir-external-provisioner.yaml /data/kubernetes/cfg &&\
+    kubectl apply -f /data/kubernetes/cfg/nfs-subdir-external-provisioner.yaml &>/dev/null
+    nfs_apply_check=$?
+    log_result "创建Pod: nfs-subdir-external-provisioner" "${nfs_apply_check}"
+    [ ${nfs_apply_check} -eq 0 ] && source pod_running_check nfs-subdir-external-provisioner
+    # kuboard
+    cp -f temp_install/node/kuboard.yaml /data/kubernetes/cfg &&\
+    kubectl apply -f /data/kubernetes/cfg/kuboard.yaml &>/dev/null
+    kuboard_apply_check=$?
+    log_result "创建Pod: kuboard" "${kuboard_apply_check}"
+    [ ${kuboard_apply_check} -eq 0 ] && source pod_running_check kuboard
+    # dashboard
+    cp -f temp_install/node/{kube-dashboard.yaml,kubernetes-admin.yaml} /data/kubernetes/cfg &&\
+    kubectl apply -f /data/kubernetes/cfg/kube-dashboard.yaml &>/dev/null &&\
+    kubectl apply -f /data/kubernetes/cfg/kubernetes-admin.yaml &>/dev/null
+    dashboard_apply_check=$?
+    log_result "创建Pod: dashboard" "${dashboard_apply_check}"
+    [ ${dashboard_apply_check} -eq 0 ] && source pod_running_check dashboard
+  # 远程部署
+  else
+    [ $(which kubectl &>/dev/null;echo $?) -ne 0 ] && cp -f binaries/kubernetes/kubectl /usr/local/bin/kubectl
+    [ ! -d /root/.kube ] && mkdir /root/.kube
+    [ ! -f /root/.kube/config ] && cp -f temp_install/master/kube.config /root/.kube/config
+    # kube-flannel
+    expect_ssh "scp -pq -P${dst_port} temp_install/node/kube-flannel.yml root@${dst_host}:/data/kubernetes/cfg" "${dst_password}" "${Pod_Log}"
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'kubectl apply -f /data/kubernetes/cfg/kube-flannel.yml'" "${dst_password}" "${Pod_Log}"
+    flannel_apply_check=$?
+    log_result "创建Pod: kube-flannel" "${flannel_apply_check}"
+    [ ${flannel_apply_check} -eq 0 ] && source pod_running_check kube-flannel
+    # coredns
+    expect_ssh "scp -pq -P${dst_port} temp_install/node/coredns.yml root@${dst_host}:/data/kubernetes/cfg" "${dst_password}" "${Pod_Log}"
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'kubectl apply -f /data/kubernetes/cfg/coredns.yml'" "${dst_password}" "${Pod_Log}"
+    coredns_apply_check=$?
+    log_result "创建Pod: coredns" "${coredns_apply_check}"
+    [ ${coredns_apply_check} -eq 0 ] && source pod_running_check coredns
+    # metrics-server
+    expect_ssh "scp -pq -P${dst_port} temp_install/node/metrics-server.yaml root@${dst_host}:/data/kubernetes/cfg" "${dst_password}" "${Pod_Log}"
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'kubectl apply -f /data/kubernetes/cfg/metrics-server.yaml'" "${dst_password}" "${Pod_Log}"
+    metrics_server_apply_check=$?
+    log_result "创建Pod: metrics-server" "${metrics_server_apply_check}"
+    [ ${metrics_server_apply_check} -eq 0 ] && source pod_running_check metrics_server
+    # reloader
+    expect_ssh "scp -pq -P${dst_port} temp_install/node/reloader.yml root@${dst_host}:/data/kubernetes/cfg" "${dst_password}" "${Pod_Log}"
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'kubectl create namespace environment &>/dev/null && kubectl apply -f /data/kubernetes/cfg/reloader.yml'" "${dst_password}" "${Pod_Log}"
+    reloader_apply_check=$?
+    log_result "创建Pod: reloader" "${reloader_apply_check}"
+    [ ${reloader_apply_check} -eq 0 ] && source pod_running_check reloader
+    # nfs-subdir-external-provisioner
+    expect_ssh "scp -pq -P${dst_port} temp_install/nfs/nfs-subdir-external-provisioner.yaml root@${dst_host}:/data/kubernetes/cfg" "${dst_password}" "${Pod_Log}"
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'kubectl apply -f /data/kubernetes/cfg/nfs-subdir-external-provisioner.yaml'" "${dst_password}" "${Pod_Log}"
+    nfs_apply_check=$?
+    log_result "创建Pod: nfs-subdir-external-provisioner" "${nfs_apply_check}"
+    [ ${nfs_apply_check} -eq 0 ] && source pod_running_check nfs-subdir-external-provisioner
+    # kuboard
+    expect_ssh "scp -pq -P${dst_port} temp_install/node/kuboard.yaml root@${dst_host}:/data/kubernetes/cfg" "${dst_password}" "${Pod_Log}"
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'kubectl apply -f /data/kubernetes/cfg/kuboard.yaml'" "${dst_password}" "${Pod_Log}"
+    kuboard_apply_check=$?
+    log_result "创建Pod: kuboard" "${kuboard_apply_check}"
+    [ ${kuboard_apply_check} -eq 0 ] && source pod_running_check kuboard
+    # dashboard
+    expect_ssh "scp -pq -P${dst_port} temp_install/node/{kube-dashboard.yaml,kubernetes-admin.yaml} root@${dst_host}:/data/kubernetes/cfg" "${dst_password}" "${Pod_Log}"
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'kubectl apply -f /data/kubernetes/cfg/kube-dashboard.yaml && kubectl apply -f /data/kubernetes/cfg/kubernetes-admin.yaml'" "${dst_password}" "${Pod_Log}"
+    dashboard_apply_check=$?
+    log_result "创建Pod: dashboard" "${dashboard_apply_check}"
+    [ ${dashboard_apply_check} -eq 0 ] && source pod_running_check dashboard
+  fi
+}
+
+echo "################## Apply Pod Begin #################################"
+echo "K8s集群部署完毕，开始部署集群所需基础Pod:"
+echo
+case $1 in
+  --local)
+    apply_pod ${local_ip}
+    ;;
+  --cluster)
+    apply_pod ${MASTER[master-1]}
+    ;;
+  *)
+    echo Error
+esac
+echo "################## Apply Pod End ###################################"

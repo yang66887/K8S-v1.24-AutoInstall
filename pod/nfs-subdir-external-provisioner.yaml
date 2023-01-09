@@ -1,0 +1,282 @@
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  annotations:
+    storageclass.kubernetes.io/is-default-class: 'true'
+  labels:
+    app: nfs-subdir-external-provisioner
+    release: "nfs-subdir-external-provisioner"
+  name: nfs-eworld
+provisioner: cluster.local/nfs-subdir-external-provisioner # or choose another name, must match deployment's env PROVISIONER_NAME'
+parameters:
+  archiveOnDelete: "true"
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: Immediate
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  labels:
+    app: nfs-subdir-external-provisioner
+    release: "nfs-subdir-external-provisioner-retain"
+  name: nfs-eworld-retain
+provisioner: cluster.local/nfs-subdir-external-provisioner-retain # or choose another name, must match deployment's env PROVISIONER_NAME'
+parameters:
+  archiveOnDelete: "true"
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+volumeBindingMode: Immediate
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: nfs-subdir-external-provisioner
+    release: "nfs-subdir-external-provisioner"
+  name: nfs-subdir-external-provisioner
+  namespace: environment
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: nfs-subdir-external-provisioner
+    release: "nfs-subdir-external-provisioner-retain"
+  name: nfs-subdir-external-provisioner-retain
+  namespace: environment
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: nfs-subdir-external-provisioner-retain-runner
+  labels:
+    app: nfs-subdir-external-provisioner
+    release: nfs-subdir-external-provisioner-retain
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "update", "patch"]
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: nfs-subdir-external-provisioner-runner
+  labels:
+    app: nfs-subdir-external-provisioner
+    release: nfs-subdir-external-provisioner
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "update", "patch"]
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: run-nfs-subdir-external-provisioner
+  labels:
+    app: nfs-subdir-external-provisioner
+    release: nfs-subdir-external-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: nfs-subdir-external-provisioner
+    namespace: environment
+roleRef:
+  kind: ClusterRole
+  name: nfs-subdir-external-provisioner-runner
+  apiGroup: rbac.authorization.k8s.io
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: run-nfs-subdir-external-provisioner-retain
+  labels:
+    app: nfs-subdir-external-provisioner
+    release: nfs-subdir-external-provisioner-retain
+subjects:
+  - kind: ServiceAccount
+    name: nfs-subdir-external-provisioner-retain
+    namespace: environment
+roleRef:
+  kind: ClusterRole
+  name: nfs-subdir-external-provisioner-retain-runner
+  apiGroup: rbac.authorization.k8s.io
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: leader-locking-nfs-subdir-external-provisioner-retain
+  namespace: environment
+  labels:
+    app: nfs-subdir-external-provisioner
+    release: nfs-subdir-external-provisioner-retain
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: leader-locking-nfs-subdir-external-provisioner
+  namespace: environment
+  labels:
+    app: nfs-subdir-external-provisioner
+    release: nfs-subdir-external-provisioner
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: leader-locking-nfs-subdir-external-provisioner-retain
+  namespace: environment
+  labels:
+    app: nfs-subdir-external-provisioner
+    release: nfs-subdir-external-provisioner-retain
+subjects:
+  - kind: ServiceAccount
+    name: nfs-subdir-external-provisioner-retain
+    namespace: environment
+roleRef:
+  kind: Role
+  name: leader-locking-nfs-subdir-external-provisioner-retain
+  apiGroup: rbac.authorization.k8s.io
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: leader-locking-nfs-subdir-external-provisioner
+  namespace: environment
+  labels:
+    app: nfs-subdir-external-provisioner
+    release: nfs-subdir-external-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: nfs-subdir-external-provisioner
+    namespace: environment
+roleRef:
+  kind: Role
+  name: leader-locking-nfs-subdir-external-provisioner
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nfs-subdir-external-provisioner-retain
+  labels:
+    app: nfs-subdir-external-provisioner
+    release: nfs-subdir-external-provisioner-retain
+  annotations:
+    deployment.kubernetes.io/revision: '1'
+  namespace: environment
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nfs-subdir-external-provisioner
+      release: nfs-subdir-external-provisioner-retain
+  template:
+    metadata:
+      labels:
+        app: nfs-subdir-external-provisioner
+        release: nfs-subdir-external-provisioner-retain
+    spec:
+      serviceAccountName: nfs-subdir-external-provisioner-retain
+      serviceAccount: nfs-subdir-external-provisioner-retain
+      restartPolicy: Always
+      containers:
+        - name: nfs-subdir-external-provisioner
+          image: k8s.gcr.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: nfs-subdir-external-provisioner-root
+              mountPath: /persistentvolumes
+          env:
+            - name: PROVISIONER_NAME
+              value: cluster.local/nfs-subdir-external-provisioner-retain
+            - name: NFS_SERVER
+              value: nfs_server
+            - name: NFS_PATH
+              value: /data/nfs
+      volumes:
+        - name: nfs-subdir-external-provisioner-root
+          nfs:
+            server: nfs_server
+            path: /data/nfs
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nfs-subdir-external-provisioner
+  labels:
+    app: nfs-subdir-external-provisioner
+    release: nfs-subdir-external-provisioner
+  annotations:
+    deployment.kubernetes.io/revision: '1'
+  namespace: environment
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nfs-subdir-external-provisioner
+      release: nfs-subdir-external-provisioner
+  template:
+    metadata:
+      labels:
+        app: nfs-subdir-external-provisioner
+        release: nfs-subdir-external-provisioner
+    spec:
+      serviceAccountName: nfs-subdir-external-provisioner
+      serviceAccount: nfs-subdir-external-provisioner
+      restartPolicy: Always
+      containers:
+        - name: nfs-subdir-external-provisioner
+          image: k8s.gcr.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: nfs-subdir-external-provisioner-root
+              mountPath: /persistentvolumes
+          env:
+            - name: PROVISIONER_NAME
+              value: cluster.local/nfs-subdir-external-provisioner
+            - name: NFS_SERVER
+              value: nfs_server
+            - name: NFS_PATH
+              value: /data/nfs
+      volumes:
+        - name: nfs-subdir-external-provisioner-root
+          nfs:
+            server: nfs_server
+            path: /data/nfs

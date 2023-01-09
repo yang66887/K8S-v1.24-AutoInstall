@@ -1,0 +1,446 @@
+#!/bin/bash
+
+Master_Log='/dev/null'
+
+dependencies(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password=$3
+  dst_release=$4
+
+  case ${dst_release} in
+    CentOS7_9)
+      mkdir temp_install/master/${dst_host}.rpms
+      cat rpms/others/dependencies.tar.gz0*|tar zx -C temp_install/master/${dst_host}.rpms
+      tar xf rpms/others/net-tools.tar.gz -C temp_install/master/${dst_host}.rpms
+      # 本机安装
+      if [ "X${dst_host}" == "X${local_ip}" ];then
+        bash dep_check temp_install/master/${dst_host}.rpms
+        if [ $(ls temp_install/master/${dst_host}.rpms/*.rpm &>/dev/null;echo $?) -eq 0 ];then
+          rpm -Uvh temp_install/master/${dst_host}.rpms/*.rpm &>/dev/null
+          dependencies_install_check=$?
+        else
+          dependencies_install_check=0
+        fi
+        log_result "安装Nginx与Keepalived依赖软件包" "${dependencies_install_check}"
+      # 远程安装
+      else
+        expect_ssh "scp -pq -P${dst_port} dep_check temp_install/master/${dst_host}.rpms/*.rpm root@${dst_host}:/root" "${dst_password}" "${Master_Log}"
+        dependencies_scp_check=$?
+        if [ ${dependencies_scp_check} -eq 0 ];then
+          expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /root && bash dep_check && rm -f dep_check'" "${dst_password}" "${Master_Log}"
+          expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /root;if [ $(ls *.rpm &>/dev/null;echo $?) -eq 0 ];then rpm -Uvh *.rpm && rm -f *.rpm;else /bin/true;fi'" "${dst_password}" "${Master_Log}"
+          dependencies_install_check=$?
+          log_result "安装Nginx与Keepalived依赖软件包" "${dependencies_install_check}"
+        else
+          dependencies_install_check=1
+          echo 'Nginx与Keepalived依赖包传输失败'
+        fi
+      fi
+      ;;
+    Ubuntu22_04)
+      mkdir temp_install/master/${dst_host}.debs
+      cat debs/others/dependencies.tar.gz0*|tar zx -C temp_install/master/${dst_host}.debs
+      tar xf debs/others/net-tools.tar.gz -C temp_install/master/${dst_host}.debs
+      # 本机安装
+      if [ "X${dst_host}" == "X${local_ip}" ];then
+        dpkg -i temp_install/master/${dst_host}.debs/*.deb &>/dev/null
+        dependencies_install_check=$?
+        log_result "安装Nginx与Keepalived依赖软件包" "${dependencies_install_check}"
+      # 远程安装
+      else
+        expect_ssh "scp -pq -P${dst_port} temp_install/master/${dst_host}.debs/*.deb root@${dst_host}:/root" "${dst_password}" "${Master_Log}"
+        dependencies_scp_check=$?
+        if [ ${dependencies_scp_check} -eq 0 ];then
+          expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /root && dpkg -i *.deb &>/dev/null && rm -f *.deb'" "${dst_password}" "${Master_Log}"
+          dependencies_install_check=$?
+          log_result "安装Nginx与Keepalived依赖软件包" "${dependencies_install_check}"
+        else
+          dependencies_install_check=1
+          echo 'Nginx与Keepalived依赖包传输失败'
+        fi
+      fi
+  esac
+}
+
+nginx(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password=$3
+
+  # 本机部署
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    cp sources/nginx.tar.gz temp_install/master &&\
+    cd temp_install/master && tar xf nginx.tar.gz && rm -f nginx.tar.gz && cd - &>/dev/null &&\
+    cp temp_install/master/nginx.install temp_install/master/nginx &&\
+    cd temp_install/master/nginx &&\
+    bash <nginx.install &&\
+    cp -f ../nginx.conf /usr/local/nginx/conf/nginx.conf &&\
+    cp -f ../nginx.service /usr/lib/systemd/system/nginx.service &&\
+    systemctl enable --now nginx &>/dev/null
+    nginx_install_check=$?
+    log_result "安装Nginx" "${nginx_install_check}"
+    cd - &>/dev/null
+  else
+  # 远程部署
+    expect_ssh "scp -pq -P${dst_port} sources/nginx.tar.gz temp_install/master/{nginx.install,nginx.conf,nginx.service} root@${dst_host}:/root"  "${dst_password}" "${Master_Log}"
+    nginx_scp_check=$?
+    if [ ${nginx_scp_check} -eq 0 ];then
+      expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /root && tar xf nginx.tar.gz && cp nginx.install nginx && cd nginx && bash <nginx.install && cd - &>/dev/null && cp -f nginx.conf /usr/local/nginx/conf/nginx.conf && cp -f nginx.service /usr/lib/systemd/system/nginx.service && rm -rf nginx* && systemctl enable --now nginx'" "${dst_password}" "${Master_Log}"
+      nginx_install_check=$?
+      log_result "安装Nginx" "${nginx_install_check}"
+    else
+      nginx_install_check=1
+      echo 'Nginx安装包传输失败'
+    fi
+  fi
+}
+
+keepalived(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password=$3
+  dst_release=$4
+
+  # 本机安装
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    case ${dst_release} in
+      CentOS7_9)
+        cp sources/keepalived.tar.gz temp_install/master
+        cd temp_install/master
+        tar xf keepalived.tar.gz
+        cp keepalived.install keepalived
+        cd keepalived
+        bash <keepalived.install &&\
+        cp -f ../keepalived.conf.${dst_host} /etc/keepalived/keepalived.conf &&\
+        cp -f ../check_nginx.sh /etc/keepalived/check_nginx.sh &&\
+        chmod 755 /etc/keepalived/check_nginx.sh &&\
+        systemctl enable --now keepalived &>/dev/null
+        keepalived_install_check=$?
+        log_result "安装Keepalived" "${keepalived_install_check}"
+        cd ../../../
+        ;;
+      Ubuntu22_04)
+        cp -f temp_install/master/keepalived.conf.${dst_host} /etc/keepalived/keepalived.conf &&\
+        cp -f temp_install/master/check_nginx.sh /etc/keepalived/check_nginx.sh &&\
+        cp -f temp_install/master/keepalived.service /lib/systemd/system/keepalived.service &&\
+        chmod 755 /etc/keepalived/check_nginx.sh &&\
+        systemctl daemon-reload &&\
+        systemctl enable --now keepalived &>/dev/null
+        keepalived_install_check=$?
+        log_result "安装Keepalived" "${keepalived_install_check}"
+    esac
+  else
+  # 远程安装
+    case ${dst_release} in
+      CentOS7_9)
+        expect_ssh "scp -pq -P${dst_port} sources/keepalived.tar.gz temp_install/master/{keepalived.conf.${dst_host},check_nginx.sh,keepalived.install} root@${dst_host}:/root" "${dst_password}" "${Master_Log}"
+        keepalived_scp_check=$?
+        if [ ${keepalived_scp_check} -eq 0 ];then
+          expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /root && tar xf keepalived.tar.gz && mv -f keepalived.install keepalived && cd keepalived && bash <keepalived.install && mv -f ../keepalived.conf.${dst_host} /etc/keepalived/keepalived.conf && mv -f ../check_nginx.sh /etc/keepalived/check_nginx.sh && chmod 755 /etc/keepalived/check_nginx.sh && cd ../ && rm -rf keepalived* && systemctl enable --now keepalived'" "${dst_password}" "${Master_Log}"
+          keepalived_install_check=$?
+          log_result "安装Keepalived" "${keepalived_install_check}"
+        else
+          keepalived_install_check=1
+          echo 'Keepalived安装包传输失败'
+        fi
+        ;;
+      Ubuntu22_04)
+        expect_ssh "scp -pq -P${dst_port} temp_install/master/{keepalived.conf.${dst_host},keepalived.service,check_nginx.sh} root@${dst_host}:/etc/keepalived" "${dst_password}" "${Master_Log}"
+        keepalived_scp_check=$?
+        if [ ${keepalived_scp_check} -eq 0 ];then
+          expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /etc/keepalived && mv -f keepalived.service /lib/systemd/system/keepalived.service && systemctl daemon-reload && mv -f keepalived.conf.${dst_host} keepalived.conf && chmod 755 check_nginx.sh && systemctl enable --now keepalived'" "${dst_password}" "${Master_Log}"
+          keepalived_install_check=$?
+          log_result "安装Keepalived" "${keepalived_install_check}"
+        else
+          keepalived_install_check=1
+          echo 'Keepalived安装包传输失败'
+        fi
+    esac
+  fi
+}
+
+kube_apiserver(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password=$3
+
+  # 本机部署
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    # 部署二进制程序文件
+    cp -f binaries/kubernetes/{kube-apiserver,kubectl} /data/kubernetes/bin/ &&\
+    chmod 755 /data/kubernetes/bin/{kube-apiserver,kubectl} &&\
+    ln -sf /data/kubernetes/bin/kubectl /usr/local/bin/kubectl
+    binaries_install_check=$?
+    log_result "部署Kube-apiserver二进制程序文件" "${binaries_install_check}"
+    # 部署证书
+    cp -f temp_install/ca/{ca.pem,ca-key.pem} /data/kubernetes/ssl &&\
+    cp -f temp_install/etcd/ssl/{etcd.pem,etcd-key.pem} /data/kubernetes/ssl &&\
+    cp -f temp_install/master/ssl/{kube-apiserver.pem,kube-apiserver-key.pem,kubectl.pem,kubectl-key.pem} /data/kubernetes/ssl &&\
+    cp -f temp_install/node/ssl/{kube-proxy.pem,kube-proxy-key.pem} /data/kubernetes/ssl
+    ssl_install_check=$?
+    log_result "部署Kube-apiserver证书" "${ssl_install_check}"
+    # 部署配置文件
+    cp -f temp_install/master/{token.csv,kube-apiserver.conf} /data/kubernetes/cfg
+    config_install_check=$?
+    log_result "部署Kube-apiserver配置文件" "${config_install_check}"
+    # 创建服务
+    cp -f temp_install/master/kube-apiserver.service /usr/lib/systemd/system/kube-apiserver.service
+    service_install_check=$?
+    log_result "创建Kube-apiserver服务" "${service_install_check}"
+    # 启动服务
+    systemctl enable --now kube-apiserver &>/dev/null
+    service_start_check=$?
+    log_result "启动Kube-apiserver服务" "${service_start_check}"
+    # 配置kubectl
+    if [ ! -d /root/.kube ];then
+      mkdir /root/.kube
+    fi
+    cp -f temp_install/master/kube.config /root/.kube/config
+    kubectl_config_check=$?
+    log_result "配置kubectl" "${kubectl_config_check}"
+  # 远程部署
+  else
+    # 部署二进制程序文件
+    expect_ssh "scp -pq -P${dst_port} binaries/kubernetes/{kube-apiserver,kubectl} root@${dst_host}:/data/kubernetes/bin/" "${dst_password}" "${Master_Log}" &&\
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'chmod 755 /data/kubernetes/bin/{kube-apiserver,kubectl} && ln -sf /data/kubernetes/bin/kubectl /usr/local/bin/kubectl'" "${dst_password}" "${Master_Log}"
+    binaries_install_check=$?
+    log_result "部署Kube-apiserver二进制程序文件" "${binaries_install_check}"
+    # 部署证书
+    expect_ssh "scp -pq -P${dst_port} temp_install/ca/{ca.pem,ca-key.pem} temp_install/etcd/ssl/{etcd.pem,etcd-key.pem} temp_install/master/ssl/{kube-apiserver.pem,kube-apiserver-key.pem,kubectl.pem,kubectl-key.pem} temp_install/node/ssl/{kube-proxy.pem,kube-proxy-key.pem} root@${dst_host}:/data/kubernetes/ssl" "${dst_password}" "${Master_Log}"
+    ssl_install_check=$?
+    log_result "部署Kube-apiserver证书" "${ssl_install_check}"
+    # 部署配置文件
+    expect_ssh "scp -pq -P${dst_port} temp_install/master/{token.csv,kube-apiserver.conf} root@${dst_host}:/data/kubernetes/cfg" "${dst_password}" "${Master_Log}"
+    config_install_check=$?
+    log_result "部署Kube-apiserver配置文件" "${config_install_check}"
+    # 创建服务
+    expect_ssh "scp -pq -P${dst_port} temp_install/master/kube-apiserver.service root@${dst_host}:/usr/lib/systemd/system/kube-apiserver.service" "${dst_password}" "${Master_Log}"
+    service_install_check=$?
+    log_result "创建Kube-apiserver服务" "${service_install_check}"
+    # 启动服务
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'systemctl enable --now kube-apiserver.service'" "${dst_password}" "${Master_Log}"
+    service_start_check=$?
+    log_result "启动Kube-apiserver服务" "${service_start_check}"
+    # 配置kubectl
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'mkdir /root/.kube'" "${dst_password}" "${Master_Log}" &&\
+    expect_ssh "scp -pq -P${dst_port} temp_install/master/kube.config root@${dst_host}:/root/.kube/config" "${dst_password}" "${Master_Log}"
+    kubectl_config_check=$?
+    log_result "配置kubectl" "${kubectl_config_check}"
+  fi
+}
+
+create_cluster_role(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password=$3
+  
+  # 本机部署
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    # 添加kubelet角色
+    bash <temp_install/master/clusterrole.create
+    kubelet_role_check=$?
+    log_result "创建kubelet-bootstrap角色" "${kubelet_role_check}"
+    log_result "创建kube-apiserver:kubelet-apis角色" "${kubelet_role_check}"
+  # 远程部署
+  else
+    expect_ssh "scp -pq -P${dst_port} temp_install/master/clusterrole.create root@${dst_host}:/root" "${dst_password}" "${Master_Log}"
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'cd /root && bash<clusterrole.create && rm -f clusterrole.create'" "${dst_password}" "${Master_Log}"
+    kubelet_role_check=$?
+    log_result "创建kubelet-bootstrap角色" "${kubelet_role_check}"
+    log_result "创建kube-apiserver:kubelet-apis角色" "${kubelet_role_check}"
+  fi
+}
+
+kube_controller_manager(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password=$3
+
+  # 本机部署
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    # 部署二进制程序文件
+    cp -f binaries/kubernetes/kube-controller-manager /data/kubernetes/bin/ &&\
+    chmod 755 /data/kubernetes/bin/kube-controller-manager &&\
+    binaries_install_check=$?
+    log_result "部署Kube-controller-manager二进制程序文件" "${binaries_install_check}"
+    # 部署证书
+    cp -f temp_install/master/ssl/{kube-controller-manager.pem,kube-controller-manager-key.pem} /data/kubernetes/ssl
+    ssl_install_check=$?
+    log_result "部署Kube-controller-manager证书" "${ssl_install_check}"
+    # 部署配置文件
+    cp -f temp_install/master/{kube-controller-manager.conf,kube-controller-manager.kubeconfig} /data/kubernetes/cfg
+    config_install_check=$?
+    log_result "部署Kube-controller-manager配置文件" "${config_install_check}"
+    # 创建服务
+    cp -f temp_install/master/kube-controller-manager.service /usr/lib/systemd/system/kube-controller-manager.service
+    service_install_check=$?
+    log_result "创建Kube-controller-manager服务" "${service_install_check}"
+    # 启动服务
+    systemctl enable --now kube-controller-manager &>/dev/null
+    service_start_check=$?
+    log_result "启动Kube-controller-manager服务" "${service_start_check}"
+  # 远程部署
+  else
+    # 部署二进制程序文件
+    expect_ssh "scp -pq -P${dst_port} binaries/kubernetes/kube-controller-manager root@${dst_host}:/data/kubernetes/bin/" "${dst_password}" "${Master_Log}" &&\
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'chmod 755 /data/kubernetes/bin/kube-controller-manager'" "${dst_password}" "${Master_Log}"
+    binaries_install_check=$?
+    log_result "部署Kube-controller-manager二进制程序文件" "${binaries_install_check}"
+    # 部署证书
+    expect_ssh "scp -pq -P${dst_port} temp_install/master/ssl/{kube-controller-manager.pem,kube-controller-manager-key.pem} root@${dst_host}:/data/kubernetes/ssl" "${dst_password}" "${Master_Log}"
+    ssl_install_check=$?
+    log_result "部署Kube-controller-manager证书" "${ssl_install_check}"
+    # 部署配置文件
+    expect_ssh "scp -pq -P${dst_port} temp_install/master/{kube-controller-manager.conf,kube-controller-manager.kubeconfig} root@${dst_host}:/data/kubernetes/cfg" "${dst_password}" "${Master_Log}"
+    config_install_check=$?
+    log_result "部署Kube-controller-manager配置文件" "${config_install_check}"
+    # 创建服务
+    expect_ssh "scp -pq -P${dst_port} temp_install/master/kube-controller-manager.service root@${dst_host}:/usr/lib/systemd/system/kube-controller-manager.service" "${dst_password}" "${Master_Log}"
+    service_install_check=$?
+    log_result "创建Kube-controller-manager服务" "${service_install_check}"
+    # 启动服务
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'systemctl enable --now kube-controller-manager'" "${dst_password}" "${Master_Log}"
+    service_start_check=$?
+    log_result "启动Kube-controller-manager服务" "${service_start_check}"
+  fi
+}
+
+kube_scheduler(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password=$3
+
+  # 本机部署
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    # 部署二进制程序文件
+    cp -f binaries/kubernetes/kube-scheduler /data/kubernetes/bin/ &&\
+    chmod 755 /data/kubernetes/bin/kube-scheduler &&\
+    binaries_install_check=$?
+    log_result "部署Kube-scheduler二进制程序文件" "${binaries_install_check}"
+    # 部署证书
+    cp -f temp_install/master/ssl/{kube-scheduler.pem,kube-scheduler-key.pem} /data/kubernetes/ssl
+    ssl_install_check=$?
+    log_result "部署Kube-scheduler证书" "${ssl_install_check}"
+    # 部署配置文件
+    cp -f temp_install/master/{kube-scheduler.conf,kube-scheduler.kubeconfig} /data/kubernetes/cfg
+    config_install_check=$?
+    log_result "部署Kube-scheduler配置文件" "${config_install_check}"
+    # 创建服务
+    cp -f temp_install/master/kube-scheduler.service /usr/lib/systemd/system/kube-scheduler.service
+    service_install_check=$?
+    log_result "创建Kube-scheduler服务" "${service_install_check}"
+    # 启动服务
+    systemctl enable --now kube-scheduler &>/dev/null
+    service_start_check=$?
+    log_result "启动Kube-scheduler服务" "${service_start_check}"
+  # 远程部署
+  else
+    # 部署二进制程序文件
+    expect_ssh "scp -pq -P${dst_port} binaries/kubernetes/kube-scheduler root@${dst_host}:/data/kubernetes/bin/" "${dst_password}" "${Master_Log}" &&\
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'chmod 755 /data/kubernetes/bin/kube-scheduler'" "${dst_password}" "${Master_Log}"
+    binaries_install_check=$?
+    log_result "部署Kube-scheduler二进制程序文件" "${binaries_install_check}"
+    # 部署证书
+    expect_ssh "scp -pq -P${dst_port} temp_install/master/ssl/{kube-scheduler.pem,kube-scheduler-key.pem} root@${dst_host}:/data/kubernetes/ssl" "${dst_password}" "${Master_Log}"
+    ssl_install_check=$?
+    log_result "部署Kube-scheduler证书" "${ssl_install_check}"
+    # 部署配置文件
+    expect_ssh "scp -pq -P${dst_port} temp_install/master/{kube-scheduler.conf,kube-scheduler.kubeconfig} root@${dst_host}:/data/kubernetes/cfg" "${dst_password}" "${Master_Log}"
+    config_install_check=$?
+    log_result "部署Kube-scheduler配置文件" "${config_install_check}"
+    # 创建服务
+    expect_ssh "scp -pq -P${dst_port} temp_install/master/kube-scheduler.service root@${dst_host}:/usr/lib/systemd/system/kube-scheduler.service" "${dst_password}" "${Master_Log}"
+    service_install_check=$?
+    log_result "创建Kube-scheduler服务" "${service_install_check}"
+    # 启动服务
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'systemctl enable --now kube-scheduler'" "${dst_password}" "${Master_Log}"
+    service_start_check=$?
+    log_result "启动Kube-scheduler服务" "${service_start_check}"
+  fi
+}
+
+deploy(){
+  # 目标设备
+  dst_host=$1
+  host_name=$(grep '^HOST.*=(' config|grep ${dst_host}|awk -F= '{print $1}')
+  dst_port=$(eval echo \${"$host_name"[port]})
+  dst_password=$(eval echo \${"$host_name"[password]})
+  dst_release=$(eval echo \${"$host_name"[release]})
+
+  # 本机
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    # 创建工作目录
+    if [ ! -d /data/kubernetes ];then
+      mkdir -p /data/kubernetes/{bin,cfg,logs,ssl}
+      kubernetes_dir_check=$?
+      log_result "创建Kubernetes工作目录" "${kubernetes_dir_check}"
+    else
+      kubernetes_dir_check=0
+      log_result "创建Kubernetes工作目录" "${kubernetes_dir_check}"
+    fi
+  # 远程
+  else
+    # 创建工作目录
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'test -d /data/kubernetes'" "${dst_password}" "${Master_Log}"
+    kubernetes_dir_check=$?
+    if [ ${kubernetes_dir_check} -eq 0 ];then
+      log_result "创建Kubernetes工作目录" "${kubernetes_dir_check}"
+    else
+      expect_ssh "ssh -p${dst_port} root@${dst_host} 'mkdir -p /data/kubernetes/{bin,cfg,logs,ssl}'" "${dst_password}" "${Master_Log}"
+      kubernetes_dir_check=$?
+      log_result "创建Kubernetes工作目录" "${kubernetes_dir_check}"
+    fi
+  fi
+  if [ ${kubernetes_dir_check} -ne 0 ];then
+    echo "创建Kubernetes工作目录失败，取消部署" && exit 1
+  fi
+
+  if [ ${master_cluster} -eq 1 ];then
+    dependencies ${dst_host} ${dst_port} ${dst_password} ${dst_release}
+    if [ ${dependencies_install_check} -ne 0 ];then
+      echo '依赖安装失败，取消部署!' && exit 1
+    fi
+    nginx ${dst_host} ${dst_port} ${dst_password}
+    if [ ${nginx_install_check} -ne 0 ];then
+      echo 'Nginx安装失败，取消部署!' && exit 1
+    fi
+    keepalived ${dst_host} ${dst_port} ${dst_password} ${dst_release}
+    if [ ${keepalived_install_check} -ne 0 ];then
+      echo 'Keepalived安装失败，取消部署!' && exit 1
+    fi
+  fi
+  kube_apiserver ${dst_host} ${dst_port} ${dst_password}
+  sleep 30
+  create_cluster_role ${dst_host} ${dst_port} ${dst_password}
+  kube_controller_manager ${dst_host} ${dst_port} ${dst_password}
+  kube_scheduler ${dst_host} ${dst_port} ${dst_password}
+      
+}
+
+case $1 in
+  --local)
+    echo "################## Master ${local_ip} Begin ######################"
+    deploy ${local_ip}
+    echo "################## Master ${local_ip} End ########################"
+    echo
+    ;;
+  --cluster)
+    for Host in ${MASTER[@]}
+    do
+      echo "################## Master ${Host} Begin ######################"
+      deploy ${Host}
+      echo "################## Master ${Host} End ########################"
+      echo
+    done
+    ;;
+  *)
+    echo Error.
+esac

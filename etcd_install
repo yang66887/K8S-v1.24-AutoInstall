@@ -1,0 +1,135 @@
+#!/bin/bash
+
+Etcd_Log='/dev/null'
+
+# 部署ETCD二进制程序包
+binaries_deploy(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password="$3"
+
+  # 本机部署
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    cp -f binaries/etcd/{etcd,etcdctl,etcdutl} /data/etcd/bin &&\
+    chmod 755 /data/etcd/bin/* &&\
+    ln -sf /data/etcd/bin/etcdctl /usr/local/bin/etcdctl
+    etcd_binaries_install_check=$?
+    log_result "部署ETCD二进制程序包" "${etcd_binaries_install_check}"
+  else
+  # 远程部署
+    expect_ssh "scp -pq -P${dst_port} binaries/etcd/{etcd,etcdctl,etcdutl} root@${dst_host}:/data/etcd/bin" "${dst_password}" "${Etcd_Log}"
+    etcd_binaries_scp_check=$?
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'chmod 755 /data/etcd/bin/* && ln -sf /data/etcd/bin/etcdctl /usr/local/bin/etcdctl'" "${dst_password}" "${Etcd_Log}"
+    etcd_binaries_install_check=$?
+    log_result "部署ETCD二进制程序包" "${etcd_binaries_install_check}"
+  fi
+}
+
+# 部署ETCD证书文件
+ssl_deploy(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password=$3
+
+  # 本机部署
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    cp -f temp_install/etcd/ssl/* /data/etcd/ssl
+    etcd_ssl_install_check=$?
+    log_result "部署ETCD证书文件" "${etcd_ssl_install_check}"
+  else
+  # 远程部署
+    expect_ssh "scp -pq -P${dst_port} temp_install/etcd/ssl/* root@${dst_host}:/data/etcd/ssl" "${dst_password}" "${Etcd_Log}"
+    etcd_ssl_install_check=$?
+    log_result "部署ETCD证书文件" "${etcd_ssl_install_check}"
+  fi
+}
+
+# 部署ETCD配置文件
+yml_deploy(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password=$3
+
+  # 本机部署
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    cp -f temp_install/etcd/etcd.conf.yml.${dst_host} /data/etcd/cfg/etcd.conf.yml
+    etcd_config_install_check=$?
+    log_result "部署ETCD配置文件" "${etcd_config_install_check}"
+  else
+  # 远程部署
+    expect_ssh "scp -pq -P${dst_port} temp_install/etcd/etcd.conf.yml.${dst_host} root@${dst_host}:/data/etcd/cfg/etcd.conf.yml" "${dst_password}" "${Etcd_Log}"
+    etcd_config_install_check=$?
+    log_result "部署ETCD配置文件" "${etcd_config_install_check}"
+  fi
+}
+
+# 创建ETCD服务
+systemd_deploy(){
+  # 目标设备
+  dst_host=$1
+  dst_port=$2
+  dst_password=$3
+
+  # 本机部署
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    cp -f temp_install/etcd/etcd.service /usr/lib/systemd/system/etcd.service 
+    etcd_service_install_check=$?
+    log_result "创建ETCD服务" "${etcd_service_install_check}"
+    systemctl enable --now etcd &>/dev/null & #|| systemctl start etcd &>/dev/null
+    #etcd_service_start_check=$?
+    #log_result "启动ETCD服务" "${etcd_service_start_check}"
+  else
+  # 远程部署
+    expect_ssh "scp -pq -P${dst_port} temp_install/etcd/etcd.service root@${dst_host}:/usr/lib/systemd/system" "${dst_password}" "${Etcd_Log}"
+    etcd_service_install_check=$?
+    log_result "创建ETCD服务" "${etcd_service_install_check}"
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'systemctl enable --now etcd || systemctl start etcd'" "${dst_password}" "${Etcd_Log}" &
+    #etcd_service_start_check=$?
+    #log_result "启动ETCD服务" "${etcd_service_start_check}"
+  fi
+}
+
+deploy(){
+  # 目标设备
+  dst_host=$1
+  host_name=$(grep '^HOST.*=(' config|grep ${dst_host}|awk -F= '{print $1}')
+  dst_port=$(eval echo \${"$host_name"[port]})
+  dst_password=$(eval echo \${"$host_name"[password]})
+
+  # 本机创建ETCD工作目录
+  if [ "X${dst_host}" == "X${local_ip}" ];then
+    [ ! -d /data/etcd ] && mkdir -p /data/etcd/{bin,cfg,data,logs,ssl} &&\
+    chmod 700 /data/etcd/data
+  else
+  # 远程创建ETCD工作目录
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'test ! -d /data/etcd && mkdir -p /data/etcd/{bin,cfg,data,logs,ssl} && chmod 700 /data/etcd/data'" "${dst_password}" "${Etcd_Log}"
+  fi
+
+  binaries_deploy ${dst_host} ${dst_port} ${dst_password}
+  ssl_deploy ${dst_host} ${dst_port} ${dst_password}
+  yml_deploy ${dst_host} ${dst_port} ${dst_password}
+  systemd_deploy ${dst_host} ${dst_port} ${dst_password}
+}
+
+case $1 in
+  --local)
+    echo "################## Etcd ${local_ip} Begin ########################"
+    deploy ${local_ip}
+    echo "################## Etcd ${local_ip} End ##########################"
+    echo
+    ;;
+  --cluster)
+    for Host in ${ETCD[@]}
+    do
+      echo "################## Etcd ${Host} Begin ########################"
+      deploy ${Host}
+      echo "################## Etcd ${Host} End ##########################"
+      echo
+    done
+    ;;
+  *)
+    echo Error.
+esac

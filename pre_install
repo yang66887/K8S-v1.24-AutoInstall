@@ -1,0 +1,1146 @@
+#!/bin/bash
+
+if [ "X$(cat /proc/version|awk '{print $4}'|awk -F. '{print $(NF-1)}')" == "Xcentos" ];then
+  local_release='CentOS7_9'
+elif [ "X$(cat /proc/version|awk '{print $6}'|sed 's/(//g')" == "XUbuntu" ];then
+  local_release='Ubuntu22_04'
+else
+  echo "不支持当前操作系统，请使用CentOS 7.9或者Ubuntu 22.04操作系统的服务器执行部署"
+  exit 2
+fi
+token="$(head -c 16 /dev/urandom|od -An -t x|tr -d ' ')"
+
+[ ! -d temp_install ] && mkdir temp_install
+
+declare -A ETCD=()
+declare -A NODE=()
+declare -A MASTER=()
+
+host=$(grep "^HOST[0-9]*=" config|awk -F= '{print $1}')
+host_all=''
+for h in ${host}
+do
+  host_all="${host_all}$(eval echo \${"$h"[addr]},)"
+  echo "$(eval echo \${"$h"[addr]}) $(eval echo \${"$h"[name]})" >>temp_install/hosts_temp
+done
+host_all="$(echo ${host_all}|sed 's/\(.*\),$/\1/g')"
+if [ "X${v_ip}" != 'X' ];then
+  host_all="${host_all},${v_ip}"
+fi
+
+# 配置文件预处理
+for h in ${host}
+do
+  addr=$(eval echo \${"$h"[addr]})
+  for n in $(eval echo \${"$h"[node]})
+  do
+    case $n in
+      etcd)
+        name=etcd-$(echo ${#ETCD[@]} 1|awk '{print $1+$2}')
+        ETCD[${name}]="${addr}"
+        ;;
+      node)
+        name=node-$(echo ${#NODE[@]} 1|awk '{print $1+$2}')
+        NODE[${name}]="${addr}"
+        ;;
+      master)
+        name=master-$(echo ${#MASTER[@]} 1|awk '{print $1+$2}')
+        MASTER[${name}]="${addr}"
+    esac
+  done
+done
+
+# 参数预处理
+etcd_servers=''
+for server in ${ETCD[@]}
+do
+  etcd_servers="${etcd_servers}https://${server}:2379,"
+done
+etcd_servers="$(echo ${etcd_servers}|sed 's/\(.*\),$/\1/g')"
+
+# 检查Master节点数量
+if [ ${#MASTER[@]} -eq 1 ];then
+  # 单机部署
+  master_cluster=0
+  api_addr="${MASTER[master-1]}"
+else
+  # 集群部署
+  master_cluster=1
+  api_addr="${v_ip}"
+fi
+
+# 远程部署通道
+expect_ssh(){
+  Command="$1"
+  Password="$2"
+  LogFile="$3"
+  /usr/bin/expect <<EOF >>${LogFile}
+spawn -noecho bash -c "${Command}"
+expect {
+  "int])?" { send "yes\r";exp_continue }
+  "yes/no)?" { send "yes\r";exp_continue }
+  "assword:" { send "${Password}\r" }
+}
+expect eof
+catch wait result
+exit [lindex \$result 3]
+EOF
+}
+
+# 解压缩二进制组件包
+Binaries_and_Dependencies(){
+# Binaries
+  # cfssl
+  if [ $(which cfssl &>/dev/null;echo $?) -ne 0 ];then
+    cp -f binaries/cfssl/* /usr/local/bin
+    chmod 755 /usr/local/bin/cfssl*
+    export PATH=$PATH:/usr/local/bin
+  fi
+  # cri-dockerd
+  if [ $(ls -l binaries/cri-dockerd/cri-dockerd.tar.gz &>/dev/null;echo $?) -eq 0 ];then
+    tar xf binaries/cri-dockerd/cri-dockerd.tar.gz -C binaries/cri-dockerd/
+    rm -f binaries/cri-dockerd/cri-dockerd.tar.gz
+  fi
+  # etcd
+  if [ $(ls -l binaries/etcd/etcd.tar.gz &>/dev/null;echo $?) -eq 0 ];then
+    tar xf binaries/etcd/etcd.tar.gz -C binaries/etcd/
+    rm -f binaries/etcd/etcd.tar.gz
+  fi
+  # kubernetes
+  if [ $(ls -l binaries/kubernetes/kubernetes.tar.gz0* &>/dev/null;echo $?) -eq 0 ];then
+    cat binaries/kubernetes/kubernetes.tar.gz0*|tar zx -C binaries/kubernetes/
+    rm -f binaries/kubernetes/kubernetes.tar.gz0*
+  fi
+# 安装expect
+  case ${local_release} in
+    CentOS7_9)
+      if [ $(which expect &>/dev/null;echo $?) -ne 0 ];then
+        tar xf rpms/others/expect.tar.gz -C rpms/others
+        rpm -Uvh rpms/others/expect*.rpm rpms/others/tcl*.rpm &>/dev/null
+        rm -f rpms/others/expect*.rpm rpms/others/tcl*.rpm
+      fi
+      ;;
+    Ubuntu22_04)
+      if [ $(which expect &>/dev/null;echo $?) -ne 0 ];then
+        tar xf debs/others/expect.tar.gz -C debs/others
+        dpkg -i debs/others/expect*.deb debs/others/libtcl*.deb debs/others/tcl-expect*.deb debs/others/tcl8.6*.deb &>/dev/null
+        rm -f debs/others/expect*.deb debs/others/libtcl*.deb debs/others/tcl-expect*.deb debs/others/tcl8.6*.deb
+      fi
+  esac
+}
+
+# 创建CA证书
+Create_CA(){
+  [ ! -d temp_install/ca ] && mkdir temp_install/ca
+  cd temp_install/ca
+  if [ ! -f ca.pem -o ! -f ca-key.pem ];then
+    cat >ca-config.json <<EOF
+{
+  "signing": {
+    "default": {
+      "expiry": "867240h"
+    },
+    "profiles": {
+      "kubernetes": {
+        "usages": [
+          "signing",
+          "key encipherment",
+          "server auth",
+          "client auth"
+        ],
+        "expiry": "867240h"
+      }
+    }
+  }
+}
+EOF
+    cat >ca-csr.json <<EOF
+{
+  "CN": "kubernetes",
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  },
+  "names": [
+    {
+      "C": "CN",
+      "ST": "ZheJiang",
+      "L": "HangZhou",
+      "O": "k8s",
+      "OU": "system"
+    }
+  ],
+  "ca": {
+    "expiry": "867240h"
+  }
+}
+EOF
+    cfssl gencert -initca ca-csr.json 2>/dev/null|cfssljson -bare ca
+  fi
+  cd - &>/dev/null
+}
+
+Create_Etcd_Config(){
+  [ ! -d temp_install/etcd ] && mkdir -p temp_install/etcd
+  # 创建ETCD配置文件
+  for name in ${!ETCD[@]}
+  do
+    ip=${ETCD[${name}]}
+    TEMP_URL="${TEMP_URL}${name}=https://${ip}:2380 "
+  done
+  ETCD_CLUSTER_URL=$(echo ${TEMP_URL}|tr ' ' '\n'|sort -n -k1|tr '\n' ','|sed -r 's/(.*),/\1/g')
+  for name in ${!ETCD[@]}
+  do
+    ETCD_IP=${ETCD[${name}]}
+    ETCD_NAME=${name}
+    if [ ! -f temp_install/etcd/etcd.conf.yml.${ETCD_IP} ];then
+    cat >temp_install/etcd/etcd.conf.yml.${ETCD_IP} <<EOF
+name: '${ETCD_NAME}'
+data-dir: /data/etcd/data
+wal-dir: /data/etcd/logs
+snapshot-count: 10000
+heartbeat-interval: 100
+election-timeout: 1000
+quota-backend-bytes: 0
+listen-peer-urls: https://${ETCD_IP}:2380
+listen-client-urls: https://${ETCD_IP}:2379,https://127.0.0.1:2379
+max-snapshots: 5
+max-wals: 5
+cors:
+initial-advertise-peer-urls: https://${ETCD_IP}:2380
+advertise-client-urls: https://${ETCD_IP}:2379
+initial-cluster: ${ETCD_CLUSTER_URL}
+initial-cluster-token: 'etcd-cluster'
+initial-cluster-state: 'new'
+client-transport-security:
+  cert-file: /data/etcd/ssl/etcd.pem
+  key-file: /data/etcd/ssl/etcd-key.pem
+  client-cert-auth: true
+  trusted-ca-file: /data/etcd/ssl/ca.pem
+  auto-tls: true
+peer-transport-security:
+  cert-file: /data/etcd/ssl/etcd.pem
+  key-file: /data/etcd/ssl/etcd-key.pem
+  client-cert-auth: true
+  trusted-ca-file: /data/etcd/ssl/ca.pem
+  auto-tls: true
+self-signed-cert-validity: 10
+log-level: warn
+logger: zap
+log-outputs: [stderr]
+force-new-cluster: false
+auto-compaction-mode: periodic
+auto-compaction-retention: "1"
+EOF
+    fi
+  done
+
+  # 创建ETCD服务文件
+  if [ ! -f temp_install/etcd/etcd.service ];then
+    cat >temp_install/etcd/etcd.service <<EOF
+[Unit]
+Description=Etcd Server
+After=network.target
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+WorkingDirectory=/data/etcd/data
+
+ExecStart=/data/etcd/bin/etcd --config-file=/data/etcd/cfg/etcd.conf.yml
+
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  fi
+}
+
+Create_Etcd_ssl(){
+  [ ! -d temp_install/etcd/ssl ] && mkdir -p temp_install/etcd/ssl
+  # 创建ETCD证书配置文件
+  cp temp_install/ca/{ca.pem,ca-key.pem,ca-config.json} temp_install/etcd/ssl
+  cd temp_install/etcd/ssl
+  if [ ! -f etcd.pem -o ! -f etcd-key.pem ];then
+    cat >etcd-csr.json <<EOF
+{
+  "CN": "etcd",
+  "hosts": [
+    "127.0.0.1",
+    "$(echo ${ETCD[@]}|sed 's/ /\",     \"/g'|tr ' ' '\n')"
+    ],
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  },
+  "names": [
+    {
+      "C": "CN",
+      "ST": "ZheJiang",
+      "L": "HangZhou",
+      "O": "k8s",
+      "OU": "system"
+    }
+  ]
+}
+EOF
+  # 创建ETCD证书
+  cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes etcd-csr.json 2>/dev/null|cfssljson -bare etcd
+  fi
+  cd - &>/dev/null
+}
+
+Create_Nginx_Config(){
+  [ ! -d temp_install/master ] && mkdir temp_install/master
+  # 创建配置文件
+  if [ ! -f temp_install/master/nginx.conf ];then
+    upstream_url=""
+    for addr in ${MASTER[@]}
+    do
+      upstream_url="${upstream_url}#    server ${addr}:6443 weight=5 max_fails=1 fail_timeout=3s;"
+    done
+    cat >temp_install/master/nginx.conf <<EOF
+#user  nobody;
+worker_processes  1;
+
+#error_log  logs/error.log;
+#error_log  logs/error.log  notice;
+#error_log  logs/error.log  info;
+
+#pid        logs/nginx.pid;
+
+events {
+  worker_connections  1024;
+}
+
+stream {
+  upstream kube-apiservers {
+    hash $remote_addr consistent;
+$(echo ${upstream_url}|sed 's/^#\(    .*\)/\1/g'|tr '#' '\n')
+  }
+
+  server {
+    listen 16443 reuseport;
+    proxy_connect_timeout 3s;
+    proxy_timeout 3000s;
+    proxy_pass kube-apiservers;
+  }
+}
+EOF
+  fi
+
+  # 创建Nginx服务
+  if [ ! -f temp_install/master/nginx.service ];then
+    cat >temp_install/master/nginx.service <<EOF
+[Unit]
+Description=nginx - high performance web server
+After=network.target remote-fs.target nss-lookup.target
+[Service]
+Type=forking
+ExecStart=/usr/local/nginx/sbin/nginx -c /usr/local/nginx/conf/nginx.conf
+ExecReload=/usr/local/nginx/sbin/nginx -s reload
+ExecStop=/usr/local/nginx/sbin/nginx -s stop
+[Install]
+  WantedBy=multi-user.target
+EOF
+  fi
+
+  # 创建安装文件
+  if [ ! -f temp_install/master/nginx.install ];then
+    cat >temp_install/master/nginx.install <<EOF
+./configure --prefix=/usr/local/nginx\
+ --with-http_v2_module\
+ --with-http_realip_module\
+ --with-http_addition_module\
+ --with-http_sub_module\
+ --with-http_dav_module\
+ --with-http_stub_status_module\
+ --with-http_flv_module\
+ --with-http_mp4_module\
+ --with-http_gunzip_module\
+ --with-http_gzip_static_module\
+ --with-http_auth_request_module\
+ --with-http_random_index_module\
+ --with-http_secure_link_module\
+ --with-http_slice_module\
+ --with-mail\
+ --with-stream\
+ --with-http_ssl_module\
+ --with-mail_ssl_module\
+ --with-stream_ssl_module &>/dev/null
+make &>/dev/null && make install &>/dev/null
+EOF
+  fi
+}
+
+Create_Keepalived_Config(){
+  [ ! -d temp_install/master ] && mkdir temp_install/master
+  # 创建配置文件
+  priority=255
+  for router_id in ${MASTER[@]}
+  do
+    priority=$(echo ${priority} 20|awk '{print $1-$2}')
+    if [ ${priority} -le 0 ];then
+      priority=1
+    fi
+    host_name=$(grep ^HOST.= config|grep ${router_id}|awk -F= '{print $1}')
+    if_name=$(eval echo \${"$host_name"[if_name]})
+    if [ ! -f temp_install/master/keepalived.conf.${router_id} ];then
+      cat >temp_install/master/keepalived.conf.${router_id} <<EOF
+! Configuration File for keepalived
+
+global_defs {
+  router_id ${router_id}
+  script_user root
+  enable_script_security
+}
+
+vrrp_script chk_nginx {
+  script "/etc/keepalived/check_nginx.sh"
+  interval 2
+  weight 20
+}
+
+vrrp_instance VI_1 {
+  state BACKUP
+  interface ${if_name}
+  virtual_router_id ${virtual_router_id}
+  priority ${priority}
+  nopreempt
+  advert_int 1
+  authentication {
+    auth_type PASS
+    auth_pass 9bnI&zD4
+  }
+  track_script {
+    chk_nginx
+  }
+  virtual_ipaddress {
+    ${v_ip}
+  }
+}
+EOF
+    fi
+  done
+
+  # 创建健康检查脚本
+  if [ ! -f temp_install/master/check_nginx.sh ];then
+    cat >temp_install/master/check_nginx.sh <<EOF
+#!/bin/bash
+
+nginx_port=16443
+
+check=\$(netstat -lntup|grep \${nginx_port}|wc -l)
+
+if [ \${check} -eq 1 ];then
+    exit 0
+else
+    systemctl start nginx || systemctl stop keepalived && exit 1
+fi
+EOF
+  fi
+
+  # 创建安装文件
+  if [ ! -f temp_install/master/keepalived.install ];then
+    cat >temp_install/master/keepalived.install <<EOF
+./configure \
+--prefix=/usr/local/keepalived \
+--sysconf=/etc &>/dev/null && \
+make &>/dev/null && \
+make install &>/dev/null
+EOF
+  fi
+  
+  # 创建Ubuntu服务文件
+  if [ ! -f temp_install/master/keepalived.service ];then
+    cat >temp_install/master/keepalived.service <<EOF
+[Unit]
+Description=Keepalive Daemon (LVS and VRRP)
+After=network-online.target
+Wants=network-online.target
+# Only start if there is a configuration file
+ConditionFileNotEmpty=/etc/keepalived/keepalived.conf
+
+[Service]
+Type=forking
+# Read configuration variable file if it is present
+EnvironmentFile=-/etc/default/keepalived
+ExecStart=/usr/sbin/keepalived -D
+ExecReload=/bin/kill -HUP \$MAINPID
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  fi
+}
+
+Create_Master_ssl(){
+  [ ! -d temp_install/master/ssl ] && mkdir -p temp_install/master/ssl
+  cp temp_install/ca/{ca.pem,ca-key.pem,ca-config.json} temp_install/master/ssl
+  cd temp_install/master/ssl
+  # 创建kube-apiserver证书配置文件
+  if [ ! -f kube-apiserver-csr.json ];then
+    cat >kube-apiserver-csr.json <<EOF
+{
+  "CN": "kubernetes",
+  "hosts": [
+    "127.0.0.1",
+    "${cluster_ip}",
+    "${cluster_cidr}",
+    "$(echo ${host_all}|sed 's/,/\",	    \"/g'|tr '	' '\n')",
+    "kubernetes",
+    "kubernetes.default",
+    "kubernetes.default.svc",
+    "kubernetes.default.svc.cluster",
+    "kubernetes.default.svc.cluster.local"
+  ],
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  },
+  "names": [
+    {
+      "C": "CN",
+      "ST": "ZheJiang",
+      "L": "HangZhou",
+      "O": "k8s",
+      "OU": "system"
+    }
+  ]
+}
+EOF
+  fi
+  # 创建kube-controller-manager证书配置文件
+  if [ ! -f kube-conteroller-manager-csr.json ];then
+    cat >kube-controller-manager-csr.json <<EOF
+{
+  "CN": "system:kube-controller-manager",
+  "hosts": [
+    "127.0.0.1",
+    "${cluster_ip}",
+    "${cluster_cidr}",
+    "$(echo ${host_all}|sed 's/,/\",	    \"/g'|tr '	' '\n')"
+  ],
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  },
+  "names": [
+    {
+      "C": "CN",
+      "ST": "ZheJiang",
+      "L": "HangZhou",
+      "O": "system:kube-controller-manager",
+      "OU": "system"
+    }
+  ]
+}
+EOF
+  fi
+  # 创建kube-scheduler证书配置文件
+  if [ ! -f kube-scheduler-csr.json ];then
+    cat >kube-scheduler-csr.json <<EOF
+{
+  "CN": "system:kube-scheduler",
+  "hosts": [
+    "127.0.0.1",
+    "${cluster_ip}",
+    "${cluster_cidr}",
+    "$(echo ${host_all}|sed 's/,/\",	    \"/g'|tr '	' '\n')"
+  ],
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  },
+  "names": [
+    {
+      "C": "CN",
+      "ST": "ZheJiang",
+      "L": "HangZhou",
+      "O": "system:kube-scheduler",
+      "OU": "system"
+    }
+  ]
+}
+EOF
+  fi
+  # 创建kubectl证书配置文件
+  if [ ! -f kubectl-csr.json ];then
+    cat >kubectl-csr.json <<EOF
+{
+  "CN": "clusteradmin",
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  },
+  "names": [
+    {
+      "C": "CN",
+      "ST": "ZheJiang",
+      "L": "HangZhou",
+      "O": "system:masters",
+      "OU": "system"
+    }
+  ]
+}
+EOF
+  fi
+  # 签发kube-apiserver证书
+  if [ ! -f kube-apiserver.pem -o ! -f kube-apiserver-key.pem ];then
+    cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes kube-apiserver-csr.json 2>/dev/null|cfssljson -bare kube-apiserver
+  fi
+  # 签发kube-controller-manager证书
+  if [ ! -f kube-controller-manager.pem -o ! -f kube-controller-manager-key.pem ];then
+    cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes kube-controller-manager-csr.json 2>/dev/null|cfssljson -bare kube-controller-manager
+  fi
+  # 签发kube-scheduler证书
+  if [ ! -f kube-scheduler.pem -o ! -f kube-scheduler-key.pem ];then
+    cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes kube-scheduler-csr.json 2>/dev/null|cfssljson -bare kube-scheduler
+  fi
+  # 签发kubectl证书
+  if [ ! -f kubectl.pem -o ! -f kubectl-key.pem ];then
+    cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes kubectl-csr.json 2>/dev/null|cfssljson -bare kubectl
+  fi
+  cd - &>/dev/null
+}
+
+Create_Kubeapiserver_Config(){
+  [ ! -d temp_install/master ] && mkdir temp_install/master
+  # 创建token令牌文件
+  if [ ! -f temp_install/master/token.csv ];then
+    cat >temp_install/master/token.csv <<EOF
+${token},kubelet-bootstrap,10001,"system:node-bootstrapper"
+EOF
+  fi
+  # 创建配置文件
+  if [ ! -f temp_install/master/kube-apiserver.conf ];then
+    cat >temp_install/master/kube-apiserver.conf <<EOF
+KUBE_APISERVER_OPTS="--enable-admission-plugins=NamespaceLifecycle,NodeRestriction,LimitRanger,ServiceAccount,DefaultStorageClass,ResourceQuota \\
+  --anonymous-auth=false \\
+  --bind-address=0.0.0.0 \\
+  --secure-port=6443 \\
+  --authorization-mode=Node,RBAC \\
+  --runtime-config=api/all=true \\
+  --requestheader-allowed-names=aggregator \\
+  --requestheader-group-headers=X-Remote-Group \\
+  --requestheader-username-headers=X-Remote-User \\
+  --requestheader-extra-headers-prefix=X-Remote-Extra- \\
+  --requestheader-client-ca-file=/data/kubernetes/ssl/ca.pem \\
+  --proxy-client-cert-file=/data/kubernetes/ssl/kube-proxy.pem \\
+  --proxy-client-key-file=/data/kubernetes/ssl/kube-proxy-key.pem \\
+  --enable-aggregator-routing=true \\
+  --enable-bootstrap-token-auth \\
+  --service-cluster-ip-range=${cluster_ip_range} \\
+  --token-auth-file=/data/kubernetes/cfg/token.csv \\
+  --service-node-port-range=${node_port_range} \\
+  --tls-cert-file=/data/kubernetes/ssl/kube-apiserver.pem \\
+  --tls-private-key-file=/data/kubernetes/ssl/kube-apiserver-key.pem \\
+  --client-ca-file=/data/kubernetes/ssl/ca.pem \\
+  --kubelet-client-certificate=/data/kubernetes/ssl/kube-apiserver.pem \\
+  --kubelet-client-key=/data/kubernetes/ssl/kube-apiserver-key.pem \\
+  --service-account-key-file=/data/kubernetes/ssl/ca-key.pem \\
+  --service-account-signing-key-file=/data/kubernetes/ssl/ca-key.pem \\
+  --service-account-issuer=https://kubernetes.default.svc.cluster.local \\
+  --etcd-cafile=/data/kubernetes/ssl/ca.pem \\
+  --etcd-certfile=/data/kubernetes/ssl/etcd.pem \\
+  --etcd-keyfile=/data/kubernetes/ssl/etcd-key.pem \\
+  --etcd-servers=${etcd_servers} \\
+  --allow-privileged=true \\
+  --audit-log-maxage=30 \\
+  --audit-log-maxbackup=3 \\
+  --audit-log-maxsize=100 \\
+  --audit-log-path=/data/kubernetes/logs/kube-apiserver-audit.log \\
+  --event-ttl=1h \\
+  --alsologtostderr=false \\
+  --log-dir=/data/kubernetes/logs/ \\
+  --v=2"
+EOF
+  fi
+  # 创建服务文件
+  if [ ! -f temp_install/master/kube-apiserver.service ];then
+    cat >temp_install/master/kube-apiserver.service <<EOF
+[Unit]
+Description=Kubernetes API Server
+Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+After=network.target
+
+[Service]
+EnvironmentFile=-/data/kubernetes/cfg/kube-apiserver.conf
+ExecStart=/data/kubernetes/bin/kube-apiserver \$KUBE_APISERVER_OPTS
+
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  fi
+}
+
+Create_KubeControllerManager_config(){
+  [ ! -d temp_install/master ] && mkdir temp_install/master
+  # 创建配置文件
+  if [ ! -f temp_install/master/kube-controller-manager.conf ];then
+    cat >temp_install/master/kube-controller-manager.conf <<EOF
+KUBE_CONTROLLER_MANAGER_OPTS="--secure-port=10257 \\
+  --kubeconfig=/data/kubernetes/cfg/kube-controller-manager.kubeconfig \\
+  --service-cluster-ip-range=${cluster_ip_range} \\
+  --cluster-name=kubernetes \\
+  --cluster-signing-cert-file=/data/kubernetes/ssl/ca.pem \\
+  --cluster-signing-key-file=/data/kubernetes/ssl/ca-key.pem \\
+  --cluster-signing-duration=867240h \\
+  --client-ca-file=/data/kubernetes/ssl/ca.pem \\
+  --requestheader-client-ca-file=/data/kubernetes/ssl/ca.pem \\
+  --tls-cert-file=/data/kubernetes/ssl/kube-controller-manager.pem \\
+  --tls-private-key-file=/data/kubernetes/ssl/kube-controller-manager-key.pem \\
+  --service-account-private-key-file=/data/kubernetes/ssl/ca-key.pem \\
+  --root-ca-file=/data/kubernetes/ssl/ca.pem \\
+  --leader-elect=true \\
+  --controllers=*,bootstrapsigner,tokencleaner \\
+  --use-service-account-credentials=true \\
+  --horizontal-pod-autoscaler-sync-period=10s \\
+  --allocate-node-cidrs=true \\
+  --cluster-cidr=${cluster_cidr_range} \\
+  --v=2"
+EOF
+  fi
+  # 创建服务文件
+  if [ ! -f temp_install/master/kube-controller-manager.service ];then
+    cat >temp_install/master/kube-controller-manager.service <<EOF
+[Unit]
+Description=Kubernetes Controller Manager
+Documentation=https://github.com/kubernetes/kubernetes
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=-/data/kubernetes/cfg/kube-controller-manager.conf
+ExecStart=/data/kubernetes/bin/kube-controller-manager \$KUBE_CONTROLLER_MANAGER_OPTS
+
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  fi
+}
+
+Create_KubeScheduler_config(){
+  [ ! -d temp_install/master ] && mkdir temp_install/master
+  # 创建配置文件
+  if [ ! -f temp_install/master/kube-scheduler.conf ];then
+    cat >temp_install/master/kube-scheduler.conf <<EOF
+KUBE_SCHEDULER_OPTS="--bind-address=127.0.0.1 \\
+  --kubeconfig=/data/kubernetes/cfg/kube-scheduler.kubeconfig \\
+  --leader-elect=true \\
+  --v=2"
+EOF
+  fi
+  # 创建服务文件
+  if [ ! -f temp_install/master/kube-scheduler.service ];then
+    cat >temp_install/master/kube-scheduler.service <<EOF
+[Unit]
+Description=Kubernetes scheduler
+Documentation=https://github.com/kubernetes/kubernetes
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=-/data/kubernetes/cfg/kube-scheduler.conf
+ExecStart=/data/kubernetes/bin/kube-scheduler \$KUBE_SCHEDULER_OPTS
+
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  fi
+}
+
+Create_Kubectl_config(){
+  # 创建kubectl配置文件
+  chmod 755 binaries/kubernetes/kubectl
+  # Master
+  cd temp_install/master/ssl
+  if [ ! -f ../kube.config ];then
+    # kubectl
+    ../../../binaries/kubernetes/kubectl config set-cluster kubernetes --certificate-authority=ca.pem --embed-certs=true --server=https://${api_addr}:16443 --kubeconfig=../kube.config &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config set-credentials clusteradmin --client-certificate=kubectl.pem --client-key=kubectl-key.pem --embed-certs=true --kubeconfig=../kube.config &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config set-context kubernetes --cluster=kubernetes --user=clusteradmin --kubeconfig=../kube.config &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config use-context kubernetes --kubeconfig=../kube.config &>/dev/null
+  fi
+  if [ ! -f ../kube-controller-manager.kubeconfig ];then
+    # kube-controller-manager
+    ../../../binaries/kubernetes/kubectl config set-cluster kubernetes --certificate-authority=ca.pem --embed-certs=true --server=https://${api_addr}:16443 --kubeconfig=../kube-controller-manager.kubeconfig &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config set-credentials kube-controller-manager --client-certificate=kube-controller-manager.pem --client-key=kube-controller-manager-key.pem --embed-certs=true --kubeconfig=../kube-controller-manager.kubeconfig &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config set-context default --cluster=kubernetes --user=kube-controller-manager --kubeconfig=../kube-controller-manager.kubeconfig &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config use-context default --kubeconfig=../kube-controller-manager.kubeconfig &>/dev/null
+  fi
+  if [ ! -f ../kube-scheduler.kubeconfig ];then
+    # kube-scheduler
+    ../../../binaries/kubernetes/kubectl config set-cluster kubernetes --certificate-authority=ca.pem --embed-certs=true --server=https://${api_addr}:16443 --kubeconfig=../kube-scheduler.kubeconfig &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config set-credentials kube-scheduler --client-certificate=kube-scheduler.pem --client-key=kube-scheduler-key.pem --embed-certs=true --kubeconfig=../kube-scheduler.kubeconfig &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config set-context default --cluster=kubernetes --user=kube-scheduler --kubeconfig=../kube-scheduler.kubeconfig &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config use-context default --kubeconfig=../kube-scheduler.kubeconfig &>/dev/null
+  fi
+  cd - &>/dev/null
+  # Node
+  cd temp_install/node/ssl
+  if [ ! -f ../kube-proxy.kubeconfig ];then
+    # kube-proxy
+    ../../../binaries/kubernetes/kubectl config set-cluster kubernetes --certificate-authority=ca.pem --embed-certs=true --server=https://${api_addr}:16443 --kubeconfig=../kube-proxy.kubeconfig &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config set-credentials kube-proxy --client-certificate=kube-proxy.pem --client-key=kube-proxy-key.pem --embed-certs=true --kubeconfig=../kube-proxy.kubeconfig &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config set-context default --cluster=kubernetes --user=kube-proxy --kubeconfig=../kube-proxy.kubeconfig &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config use-context default --kubeconfig=../kube-proxy.kubeconfig &>/dev/null
+  fi
+  cd - &>/dev/null
+}
+
+Create_clusterrole(){
+  # 创建添加集群角色命令文件
+  if [ ! -f temp_install/master/clusterrole.create ];then
+    cat >temp_install/master/clusterrole.create <<EOF
+if [ \$(kubectl get clusterrolebinding 2>/dev/null|grep ^kubelet-bootstrap &>/dev/null;echo \$?) -ne 0 ];then
+  kubectl create clusterrolebinding kubelet-bootstrap --clusterrole=system:node-bootstrapper --user=kubelet-bootstrap &>/dev/null
+fi
+if [ \$(kubectl get clusterrolebinding 2>/dev/null|grep ^kube-apiserver:kubelet-apis &>/dev/null;echo \$?) -ne 0 ];then
+  kubectl create clusterrolebinding kube-apiserver:kubelet-apis --clusterrole=system:kubelet-api-admin --user kubernetes &>/dev/null
+fi
+kubectl get clusterrolebinding 2>/dev/null|grep ^kubelet-bootstrap &>/dev/null && \
+kubectl get clusterrolebinding 2>/dev/null|grep ^kube-apiserver:kubelet-apis &>/dev/null
+EOF
+  fi
+}
+
+Create_Docker_config(){
+  [ ! -d temp_install/node ] && mkdir temp_install/node
+  cd temp_install/node
+  # 创建配置文件
+  if [ ! -f daemon.json ];then
+    cat >daemon.json <<EOF
+{
+  "data-root": "/data/docker",
+  "bip": "${docker0_bip}",
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "registry-mirrors": ["https://registry.docker-cn.com"]
+}
+EOF
+  fi
+  # 创建内核参数配置文件
+  if [ ! -f sysctl.config ];then
+    cat >sysctl.config <<EOF
+echo 'net.bridge.bridge-nf-call-ip6tables = 1' >>/etc/sysctl.conf
+echo 'net.bridge.bridge-nf-call-iptables = 1' >>/etc/sysctl.conf
+modprobe br_netfilter
+sysctl -p &>/dev/null
+EOF
+  fi
+  cd - &>/dev/null
+}
+
+Create_CriDockerd_config(){
+  [ ! -d temp_install/node ] && mkdir temp_install/node
+  cd temp_install/node
+  # 创建配置文件
+  if [ ! -f cri-dockerd.conf ];then
+    cat >cri-dockerd.conf <<EOF
+CRI_DOCKERD_OPTS="--cni-bin-dir /opt/cni/bin \\
+--cni-conf-dir /etc/cni/net.d \\
+--cri-dockerd-root-directory /data/docker/cri-dockerd \\
+--docker-endpoint unix:///run/docker.sock \\
+--network-plugin cni \\
+--pod-cidr ${cluster_cidr_range} \\
+--runtime-cgroups systemd"
+EOF
+  fi
+  # 创建服务文件
+  if [ ! -f cri-dockerd.service ];then
+    cat >cri-dockerd.service <<EOF
+[Unit]
+Description=Docker CRI Interface
+After=network.target network-online.target docker.service
+Wants=docker.service
+
+[Service]
+EnvironmentFile=-/data/kubernetes/cfg/cri-dockerd.conf
+ExecStart=/usr/local/bin/cri-dockerd \$CRI_DOCKERD_OPTS
+
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  fi
+  cd - &>/dev/null
+}
+
+Create_CniPlugins_config(){
+  [ ! -d temp_install/node ] && mkdir temp_install/node
+  cd temp_install/node
+  # 创建安装文件
+  if [ ! -f cni_plugins.install ];then
+    cat >cni_plugins.install <<EOF
+mkdir -p /opt/cni/bin && \
+mkdir -p /etc/cni/net.d && \
+mv cni-plugins.tar.gz0* /opt/cni/bin && \
+cd /opt/cni/bin && \
+cat cni-plugins.tar.gz0*|tar zx && \
+rm -f cni-plugins.tar.gz0*
+EOF
+  fi
+  cd - &>/dev/null
+}
+
+Create_Node_ssl(){
+  [ ! -d temp_install/node/ssl ] && mkdir -p temp_install/node/ssl
+  cp temp_install/ca/{ca.pem,ca-key.pem,ca-config.json} temp_install/node/ssl
+  cd temp_install/node/ssl
+  # 创建kube-proxy证书配置文件
+  if [ ! -f kube-proxy-csr.json ];then
+    cat >kube-proxy-csr.json <<EOF
+{
+  "CN": "system:kube-proxy",
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  },
+  "names": [
+    {
+      "C": "CN",
+      "ST": "ZheJiang",
+      "L": "HangZhou",
+      "O": "k8s",
+      "OU": "system"
+    }
+  ]
+}
+EOF
+  fi
+  # 签发kube-proxy证书
+  if [ ! -f kube-proxy.pem -o ! -f kube-proxy-key.pem ];then
+    cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes kube-proxy-csr.json 2>/dev/null|cfssljson -bare kube-proxy
+  fi
+  cd - &>/dev/null
+}
+
+Create_Kubelet_config(){
+  [ ! -d temp_install/node ] && mkdir temp_install/node
+  cd temp_install/node
+  # 创建bootstrap认证文件
+  if [ ! -f kubelet-bootstrap.kubeconfig ];then
+    cat >kubelet-bootstrap.kubeconfig <<EOF
+apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority: /data/kubernetes/ssl/ca.pem
+    server: https://${api_addr}:16443
+  name: kubernetes
+contexts:
+- context:
+    cluster: kubernetes
+    user: kubelet-bootstrap
+  name: default
+current-context: default
+kind: Config
+preferences: {}
+users:
+- name: kubelet-bootstrap
+  user:
+    token: ${token}
+EOF
+  fi
+  # 创建配置文件
+  if [ ! -f kubelet.conf ];then
+    cat >kubelet.conf <<EOF
+KUBELET_OPTS="--bootstrap-kubeconfig=/data/kubernetes/cfg/kubelet-bootstrap.kubeconfig \\
+  --config=/data/kubernetes/cfg/kubelet.yaml \\
+  --kubeconfig=/data/kubernetes/cfg/kubelet.kubeconfig \\
+  --cert-dir=/data/kubernetes/ssl \\
+  --container-runtime=remote \\
+  --container-runtime-endpoint=unix:///var/run/cri-dockerd.sock \\
+  --cgroup-driver=systemd \\
+  --v=2"
+EOF
+  fi
+  if [ ! -f kubelet.yaml ];then
+    cat >kubelet.yaml <<EOF
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+serverTLSBootstrap: true
+address: 0.0.0.0
+port: 10250
+readOnlyPort: 0
+cgroupDriver: systemd
+clusterDNS:
+- ${cluster_dns}
+clusterDomain: cluster.local
+failSwapOn: false
+authentication:
+  anonymous:
+    enabled: false
+  webhook:
+    enabled: true
+  x509:
+    clientCAFile: /data/kubernetes/ssl/ca.pem
+authorization:
+  mode: Webhook
+  webhook:
+    cacheUnauthorizedTTL: 30s
+evictionHard:
+  imagefs.available: 15%
+  memory.available: 100Mi
+  nodefs.available: 10%
+  nodefs.inodesFree: 5%
+maxOpenFiles: 100000
+maxPods: 110
+EOF
+  fi
+  # 创建服务文件
+  if [ ! -f kubelet.service ];then
+    cat >kubelet.service <<EOF
+[Unit]
+Description=Kubernetes kubelet
+After=network.target network-online.target docker.service
+Wants=docker.service
+
+[Service]
+EnvironmentFile=-/data/kubernetes/cfg/kubelet.conf
+ExecStart=/data/kubernetes/bin/kubelet \$KUBELET_OPTS
+
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  fi
+  cd - &>/dev/null
+}
+
+Create_Kubeproxy_config(){
+  [ ! -d temp_install/node ] && mkdir temp_install/node
+  cd temp_install/node
+  # 创建配置文件
+  if [ ! -f kube-proxy.conf ];then
+    cat >kube-proxy.conf <<EOF
+KUBE_PROXY_OPTS="--config=/data/kubernetes/cfg/kube-proxy.yaml \\
+  --v=2"
+EOF
+  fi
+  if [ ! -f kube-proxy.yaml ];then
+    cat >kube-proxy.yaml <<EOF
+kind: KubeProxyConfiguration
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+clientConnection:
+  kubeconfig: /data/kubernetes/cfg/kube-proxy.kubeconfig
+bindAddress: 0.0.0.0
+clusterCIDR: ${cluster_cidr_range}
+healthzBindAddress: 0.0.0.0:10256
+metricsBindAddress: 0.0.0.0:10249
+mode: ipvs
+ipvs:
+  scheduler: "rr"
+EOF
+  fi
+  # 创建服务文件
+  if [ ! -f kube-proxy.service ];then
+    cat >kube-proxy.service <<EOF
+[Unit]
+Description=Kubernetes Proxy
+Documentation=https://github.com/kubernetes/kubernetes
+After=network.target network-online.target
+Wants=network-online.target
+[Service]
+EnvironmentFile=-/data/kubernetes/cfg/kube-proxy.conf
+ExecStart=/data/kubernetes/bin/kube-proxy \$KUBE_PROXY_OPTS
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+[Install]
+WantedBy=multi-user.target
+EOF
+  fi
+  cd - &>/dev/null
+}
+
+Create_Pod_config(){
+  # kube-flannel.yml
+  if [ temp_install/node/kube-flannel.yml ];then
+    cp -f pod/kube-flannel.yml temp_install/node/kube-flannel.yml
+  fi
+  # coredns.yml
+  if [ temp_install/node/coredns.yml ];then
+    cp -f pod/coredns.yml temp_install/node/coredns.yml &&\
+    sed -ri "s/CLUSTER_DNS_IP/${cluster_dns}/g" temp_install/node/coredns.yml
+  fi
+  # metrics-server.yaml
+  if [ temp_install/node/metrics-server.yaml ];then
+    cp -f pod/metrics-server.yaml temp_install/node/metrics-server.yaml
+  fi
+  # reloader.yml
+  if [ temp_install/node/reloader.yml ];then
+    cp -f pod/reloader.yml temp_install/node/reloader.yml
+  fi
+  # kuboard.yaml
+  if [ temp_install/node/kuboard.yaml ];then
+    cp -f pod/kuboard.yaml temp_install/node/kuboard.yaml
+    sed -ri "s/KUBOARD_PORT/${kuboard_port}/g" temp_install/node/kuboard.yaml
+  fi
+  # kube-dashboard.yaml
+  if [ temp_install/node/kube-dashboard.yaml ];then
+    cp -f pod/kube-dashboard.yaml temp_install/node/kube-dashboard.yaml &&\
+    sed -ri "s/DASHBOARD_PORT/${dashboard_port}/g" temp_install/node/kube-dashboard.yaml
+  fi
+  # kubernetes-admin.yaml
+  if [ temp_install/node/kubernetes-admin.yaml ];then
+    cp -f pod/kubernetes-admin.yaml temp_install/node/kubernetes-admin.yaml
+  fi
+}
+
+Create_NFS_config(){
+  if [ ! -d temp_install/nfs ];then
+    mkdir temp_install/nfs
+  fi
+  if [ ! -f temp_install/nfs/exports ];then
+    cat >>temp_install/nfs/exports <<EOF
+/data/nfs ${cluster_cidr_range}(rw,sync,no_subtree_check,no_root_squash)
+EOF
+    for nfs_client in ${NODE[@]}
+    do
+      cat >>temp_install/nfs/exports <<EOF
+/data/nfs ${nfs_client}/32(rw,sync,no_subtree_check,no_root_squash)
+EOF
+    done
+  fi
+}
+
+Binaries_and_Dependencies
+Create_CA
+Create_Etcd_Config
+Create_Etcd_ssl
+Create_Nginx_Config
+Create_Keepalived_Config
+Create_Master_ssl
+Create_Kubeapiserver_Config
+Create_KubeControllerManager_config
+Create_KubeScheduler_config
+Create_clusterrole
+Create_Docker_config
+Create_CriDockerd_config
+Create_CniPlugins_config
+Create_Node_ssl
+Create_Kubelet_config
+Create_Kubeproxy_config
+Create_Kubectl_config
+Create_Pod_config
+Create_NFS_config

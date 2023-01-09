@@ -1,0 +1,71 @@
+#!/bin/bash
+
+pod_name="$1"
+for i in $(seq 3)
+do
+  echo "等待Pod: ${pod_name}启动, 30秒后开始第 ${i} 次检查"
+  sleep 30
+  case ${pod_name} in
+    kube-flannel)
+      running_count=0
+      for host in ${NODE[@]}
+      do
+        if [ "X$(kubectl get pod -o wide -A|grep kube-flannel|grep ${host}|awk '{print $4}')" == "XRunning" ];then
+          running_count=$(echo ${running_count} 1|awk '{print $1+$2}')
+          action "Node: ${host} [Pod: kube-flannel]" /bin/true
+        else
+          action "Node: ${host} [Pod: kube-flannel]" /bin/false
+        fi
+      done
+      [ ${running_count} -eq ${#NODE[@]} ] && action "启动Pod: ${pod_name}" /bin/true && echo && break
+      ;;
+    coredns)
+      if [ "X$(kubectl get pod -o wide -A|grep coredns|awk '{print $4}')" == "XRunning" ];then
+        action "启动Pod: ${pod_name}" /bin/true && echo && break
+      fi
+      ;;
+    metrics_server)
+      if [ $(kubectl get pod -o wide -n kube-system|grep ^metrics-server|awk '{print $3}'|wc -l) -eq 2 ];then
+        action "启动Pod: ${pod_name}" /bin/true && echo && break
+      fi
+      ;;
+    reloader)
+      if [ $(kubectl get pod -n environment|grep ^reloader-reloader|grep Running|wc -l) -eq 3 ];then
+        action "启动Pod: ${pod_name}" /bin/true && echo && break
+      fi
+      ;;
+    nfs-subdir-external-provisioner)
+      if [ $(kubectl get pod -n environment|grep ^nfs|grep Running|wc -l) -eq 2 ];then
+        action "启动Pod: ${pod_name}" /bin/true && echo && break
+      fi
+      ;;
+    kuboard)
+      if [ "X$(kubectl get pod -n kube-system|grep ^kuboard|awk '{print $3}')" == "XRunning" ];then
+        action "启动Pod: ${pod_name}" /bin/true
+        if [ "X${v_ip}" != "X" -a $(grep "^HOST[0-9]\{1,\}=.*master.*node" config|wc -l) -ne 0 ];then
+          echo -e "Kuboard访问地址: \033[33mhttp://${v_ip}:${kuboard_port}\033[0m"
+        else
+          echo -e "Kuboard访问地址: \033[33mhttp://[任意Node节点IP地址]:${kuboard_port}\033[0m"
+        fi
+        echo
+        break
+      fi
+      ;;
+    dashboard)
+      if [ $(kubectl get pod -o wide -A|grep ^kubernetes-dashboard|grep Running|wc -l) -eq 2 ];then
+        action "启动Pod: ${pod_name}" /bin/true
+        if [ "X${v_ip}" != "X" -a $(grep "^HOST[0-9]\{1,\}=.*master.*node" config|wc -l) -ne 0 ];then
+          echo -e "Dashboard访问地址: \033[33mhttps://${v_ip}:${dashboard_port}\033[0m"
+        else
+          echo -e "Dashboard访问地址: \033[33mhttps://[任意Node节点IP地址]:${dashboard_port}\033[0m"
+        fi
+        echo
+        echo "Token For Dashboard and Kuboard:" 
+        echo -e "\033[32m$(kubectl describe secret/administrator -n kube-system|grep ^token|awk '{print $2}')\033[0m"
+        echo
+        echo -e "\033[33mPS: Dashboard页面提示不安全时，请点击页面空白处，输入 thisisunsafe\033[0m"
+        break
+      fi
+  esac
+  [ ${i} -eq 3 ] && action "启动Pod: ${pod_name}" /bin/false
+done

@@ -1,0 +1,282 @@
+#!/bin/bash
+
+NFS_Log='/dev/null'
+nfs_server="$(grep ^HOST config|grep nfs|awk -F= '{print $1}')"
+if [ $(echo ${nfs_server}|wc -l) -eq 1 ];then
+  server_addr="$(eval echo \${"$nfs_server"[addr]})"
+  server_port="$(eval echo \${"$nfs_server"[port]})"
+  server_password="$(eval echo \${"$nfs_server"[password]})"
+  server_release="$(eval echo \${"$nfs_server"[release]})"
+else
+  echo "NFS节点数量异常，请检查配置文件。"
+  exit 1
+fi
+if [ ! -d temp_install/nfs ];then
+  mkdir temp_install/nfs
+fi
+if [ ! -f temp_install/nfs/nfs-subdir-external-provisioner.yaml ];then
+  cp -f pod/nfs-subdir-external-provisioner.yaml temp_install/nfs/nfs-subdir-external-provisioner.yaml
+  sed -ri "s/nfs_server/${server_addr}/g" temp_install/nfs/nfs-subdir-external-provisioner.yaml
+fi
+
+server_install(){
+  case ${server_release} in
+    CentOS7_9)
+      # 本机部署
+      if [ "X${server_addr}" == "X${local_ip}" ];then
+        # 检查NFS是否安装
+        if [ $(rpm -qa|grep nfs-utils &>/dev/null;echo $?) -eq 0 ];then
+          echo "NFS已安装"
+          exit 0
+        fi
+        # 安装
+        tar xf rpms/nfs/nfs.tar.gz -C temp_install/nfs
+        bash dep_check temp_install/nfs
+        rpm -Uvh temp_install/nfs/*.rpm &>/dev/null
+        nfs_install_check=$?
+        log_result "Server: [${server_addr}] 安装NFS服务端" "${nfs_install_check}"
+        # 启动
+        systemctl enable --now rpcbind nfs &>/dev/null
+        nfs_start_check=$?
+        log_result "Server: [${server_addr}] 启动NFS服务端" "${nfs_start_check}"
+        # 配置
+        if [ ! -d /data/nfs ];then
+          mkdir -p /data/nfs
+        fi
+        cp -f temp_install/nfs/exports /etc/exports
+        systemctl restart nfs &>/dev/null
+        nfs_config_check=$?
+        log_result "Server: [${server_addr}] 配置NFS服务端" "${nfs_config_check}"
+      # 远程部署
+      else
+        # 检查NFS是否安装
+        expect_ssh "ssh -p${server_port} root@${server_addr} 'rpm -qa|grep nfs-utils'" "${server_password}" "${NFS_Log}"
+        nfs_install_check=$?
+        if [ ${nfs_install_check} -eq 0 ];then
+          echo "NFS已安装"
+          exit 0
+        fi
+        # 安装
+        expect_ssh "scp -pq -P${server_port} dep_check temp_install/nfs/exports rpms/nfs/nfs.tar.gz root@${server_addr}:/root" "${server_password}" "${NFS_Log}"
+        nfs_scp_check=$?
+        if [ ${nfs_scp_check} -eq 0 ];then
+          expect_ssh "ssh -p${server_port} root@${server_addr} 'cd /root;tar xf nfs.tar.gz;bash dep_check;rpm -Uvh *.rpm && systemctl enable --now rpcbind nfs && rm -f nfs.tar.gz *.rpm dep_check'" "${server_password}" "${NFS_Log}"
+          nfs_install_check=$?
+          log_result "Server: [${server_addr}] 安装NFS服务端" "${nfs_install_check}"
+          nfs_start_check=${nfs_install_check}
+          log_result "Server: [${server_addr}] 启动NFS服务端" "${nfs_start_check}"
+        else
+          echo "NFS安装包传输失败"
+          nfs_install_check=1
+          exit 1
+        fi
+        # 配置
+        if [ ${nfs_install_check} -eq 0 ];then
+          expect_ssh "ssh -p${server_port} root@${server_addr} 'cd /root;test ! -d /data/nfs && mkdir -p /data/nfs;mv -f exports /etc/exports && systemctl restart nfs'" "${server_password}" "${NFS_Log}"
+          nfs_config_check=$?
+          log_result "Server: [${server_addr}] 配置NFS服务端" "${nfs_config_check}"
+        fi
+      fi
+      ;;
+    Ubuntu22_04)
+      # 本机部署
+      if [ "X${server_addr}" == "X${local_ip}" ];then
+        # 检查NFS是否安装
+        if [ $(dpkg -l|grep nfs-kernel-server &>/dev/null;echo $?) -eq 0 ];then
+          echo "NFS已安装"
+          exit 0
+        fi
+        # 安装
+        tar xf debs/nfs/nfs_server.tar.gz -C temp_install/nfs
+        dpkg -i temp_install/nfs/*.deb &>/dev/null
+        nfs_install_check=$?
+        log_result "Server: [${server_addr}] 安装NFS服务端" "${nfs_install_check}"
+        # 启动
+        systemctl enable --now rpcbind nfs &>/dev/null
+        nfs_start_check=$?
+        log_result "Server: [${server_addr}] 启动NFS服务端" "${nfs_start_check}"
+        # 配置
+        if [ ! -d /data/nfs ];then
+          mkdir -p /data/nfs
+        fi
+        cp -f temp_install/nfs/exports /etc/exports
+        systemctl restart nfs &>/dev/null
+        nfs_config_check=$?
+        log_result "Server: [${server_addr}] 配置NFS服务端" "${nfs_config_check}"
+      # 远程部署
+      else
+        # 检查NFS是否安装
+        expect_ssh "ssh -p${server_port} root@${server_addr} 'dpkg -l|grep nfs-kernel-server'" "${server_password}" "${NFS_Log}"
+        nfs_install_check=$?
+        if [ ${nfs_install_check} -eq 0 ];then
+          echo "NFS已安装"
+          exit 0
+        fi
+        # 安装
+        expect_ssh "scp -pq -P${server_port} temp_install/nfs/exports debs/nfs/nfs_server.tar.gz root@${server_addr}:/root" "${server_password}" "${NFS_Log}"
+        nfs_scp_check=$?
+        if [ ${nfs_scp_check} -eq 0 ];then
+          expect_ssh "ssh -p${server_port} root@${server_addr} 'cd /root;tar xf nfs_server.tar.gz;dpkg -i *.deb && systemctl enable --now rpcbind nfs-server && rm -f nfs_server.tar.gz *.deb'" "${server_password}" "${NFS_Log}"
+          nfs_install_check=$?
+          log_result "Server: [${server_addr}] 安装NFS服务端" "${nfs_install_check}"
+          nfs_start_check=${nfs_install_check}
+          log_result "Server: [${server_addr}] 启动NFS服务端" "${nfs_start_check}"
+        else
+          echo "NFS安装包传输失败"
+          nfs_install_check=1
+          exit 1
+        fi
+        # 配置
+        if [ ${nfs_install_check} -eq 0 ];then
+          expect_ssh "ssh -p${server_port} root@${server_addr} 'cd /root;mv -f exports /etc/exports && systemctl restart nfs-server'" "${server_password}" "${NFS_Log}"
+          nfs_config_check=$?
+          log_result "Server: [${server_addr}] 配置NFS服务端" "${nfs_config_check}"
+        fi
+      fi
+  esac
+}
+
+client_install(){
+  clients="$1"
+  [ "X${clients}" == "X" ] && clients="${NODE[@]}"
+  echo "${server_addr}:/data/nfs /data/nfs nfs rw 0 0" >temp_install/nfs/fstab_nfs
+  for client in ${clients}
+  do
+    client_name=$(grep ${client} config|awk -F= '{print $1}')
+    client_port=$(eval echo \${"$client_name"[port]})
+    client_password=$(eval echo \${"$client_name"[password]})
+    client_release=$(eval echo \${"$client_name"[release]})
+    case ${client_release} in
+      CentOS7_9)
+        # 本机部署
+        if [ "X${client}" == "X${local_ip}" ];then
+          # 检查NFS是否安装
+          if [ $(rpm -qa|grep nfs-utils &>/dev/null;echo $?) -eq 0 ];then
+            echo "NFS已安装"
+            exit 0
+          fi
+          # 安装
+          tar xf rpms/nfs/nfs.tar.gz -C temp_install/nfs
+          bash dep_check temp_install/nfs
+          rpm -Uvh temp_install/nfs/*.rpm &>/dev/null
+          nfs_install_check=$?
+          log_result "Client: [${client}] 安装NFS客户端" "${nfs_install_check}"
+          # 启动
+          systemctl enable --now rpcbind &>/dev/null
+          rpcbind_start_check=$?
+          log_result "Client: [${client}] 启动rpcbind" "${rpcbind_start_check}"
+          # 挂载
+          if [ ! -d /data/nfs ];then
+            mkdir -p /data/nfs
+          fi
+          cat temp_install/nfs/fstab_nfs >>/etc/fstab &&\
+          mount -a
+          nfs_mount_check=$?
+          log_result "Client: [${client}] 挂载NFS Server" "${nfs_mount_check}"
+        # 远程部署
+        else
+          # 检查NFS是否安装
+          expect_ssh "ssh -p${client_port} root@${client} 'rpm -qa|grep nfs-utils'" "${client_password}" "${NFS_Log}"
+          nfs_install_check=$?
+          if [ ${nfs_install_check} -eq 0 ];then
+            echo "NFS已安装"
+            exit 0
+          fi
+          # 安装
+          expect_ssh "scp -pq -P${client_port} dep_check temp_install/nfs/fstab_nfs rpms/nfs/nfs.tar.gz root@${client}:/root" "${client_password}" "${NFS_Log}"
+          nfs_scp_check=$?
+          if [ ${nfs_scp_check} -eq 0 ];then
+            expect_ssh "ssh -p${client_port} root@${client} 'cd /root;tar xf nfs.tar.gz;bash dep_check;rpm -Uvh *.rpm && systemctl enable --now rpcbind && rm -f nfs.tar.gz *.rpm dep_check'" "${client_password}" "${NFS_Log}"
+            nfs_install_check=$?
+            log_result "Client: [${client}] 安装NFS客户端" "${nfs_install_check}"
+            rpcbind_start_check=${nfs_install_check}
+            log_result "Client: [${client}] 启动rpcbind" "${rpcbind_start_check}"
+          else
+            echo "NFS安装包传输失败"
+            nfs_install_check=1
+            exit 1
+          fi
+          # 挂载
+          if [ ${nfs_install_check} -eq 0 ];then
+            expect_ssh "ssh -p${client_port} root@${client} 'cd /root;test ! -d /data/nfs && mkdir -p /data/nfs;cat fstab_nfs >>/etc/fstab && mount -a && rm -f fstab_nfs'" "${client_password}" "${NFS_Log}"
+            nfs_mount_check=$?
+            log_result "Client: [${client}] 挂载NFS Server" "${nfs_mount_check}"
+          fi
+        fi
+        ;;
+      Ubuntu22_04)
+        # 本机部署
+        if [ "X${client}" == "X${local_ip}" ];then
+          # 检查NFS是否安装
+          if [ $(dpkg -l|grep nfs-common &>/dev/null;echo $?) -eq 0 ];then
+            echo "NFS已安装"
+            exit 0
+          fi
+          # 安装
+          tar xf debs/nfs/nfs_client.tar.gz -C temp_install/nfs
+          dpkg -i temp_install/nfs/*.deb &>/dev/null
+          nfs_install_check=$?
+          log_result "Client: [${client}] 安装NFS客户端" "${nfs_install_check}"
+          # 启动
+          systemctl enable --now rpcbind &>/dev/null
+          rpcbind_start_check=$?
+          log_result "Client: [${client}] 启动rpcbind" "${rpcbind_start_check}"
+          # 挂载
+          if [ ! -d /data/nfs ];then
+            mkdir -p /data/nfs
+          fi
+          cat temp_install/nfs/fstab_nfs >>/etc/fstab &&\
+          mount -a
+          nfs_mount_check=$?
+          log_result "Client: [${client}] 挂载NFS Server" "${nfs_mount_check}"
+        # 远程部署
+        else
+          # 检查NFS是否安装
+          expect_ssh "ssh -p${client_port} root@${client} 'dpkg -l|grep nfs-common'" "${client_password}" "${NFS_Log}"
+          nfs_install_check=$?
+          if [ ${nfs_install_check} -eq 0 ];then
+            echo "NFS已安装"
+            exit 0
+          fi
+          # 安装
+          expect_ssh "scp -pq -P${client_port} temp_install/nfs/fstab_nfs debs/nfs/nfs_client.tar.gz root@${client}:/root" "${client_password}" "${NFS_Log}"
+          nfs_scp_check=$?
+          if [ ${nfs_scp_check} -eq 0 ];then
+            expect_ssh "ssh -p${client_port} root@${client} 'cd /root;tar xf nfs_client.tar.gz;dpkg -i *.deb && systemctl enable --now rpcbind && rm -f nfs_client.tar.gz *.deb'" "${client_password}" "${NFS_Log}"
+            nfs_install_check=$?
+            log_result "Client: [${client}] 安装NFS客户端" "${nfs_install_check}"
+            rpcbind_start_check=${nfs_install_check}
+            log_result "Client: [${client}] 启动rpcbind" "${rpcbind_start_check}"
+          else
+            echo "NFS安装包传输失败"
+            nfs_install_check=1
+            exit 1
+          fi
+          # 挂载
+          if [ ${nfs_install_check} -eq 0 ];then
+            expect_ssh "ssh -p${client_port} root@${client} 'cd /root;test ! -d /data/nfs && mkdir -p /data/nfs;cat fstab_nfs >>/etc/fstab && mount -a && rm -f fstab_nfs'" "${client_password}" "${NFS_Log}"
+            nfs_mount_check=$?
+            log_result "Client: [${client}] 挂载NFS Server" "${nfs_mount_check}"
+          fi
+        fi
+    esac
+  done
+}
+
+case $1 in
+  --cluster)
+    echo "################## NFS Begin #######################################"
+    server_install
+    client_install
+    echo "################## NFS End #########################################"
+    echo
+    ;;
+  --local)
+    echo "################## NFS Begin #######################################"
+    if [ "X${server_addr}" == "X${local_ip}" ];then
+      server_install
+    else
+      client_install ${local_ip}
+    fi
+    echo "################## NFS End #########################################"
+esac
