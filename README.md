@@ -124,7 +124,7 @@ chmod 755 install.sh        # 部署脚本添加执行权限
 ./install.sh --local-node   # 在需部署【node】组件的服务器上执行，建议单台依次部署
 ./install.sh --apply-pod    # 在【master】节点上执行, 多master节点时在【master-1】节点执行
 ```
-  - PS：单机模式部署时必须严格遵照上述顺序，否则可能导致部署失败
+  - PS：单机模式部署时必须严格按照上述命令顺序操作，否则可能会导致部署失败
 
 ## 卸载参数：
 ```shell
