@@ -191,9 +191,18 @@ kubelet(){
   # 本机部署
   if [ "X${dst_host}" == "X${local_ip}" ];then
     # 部署二进制程序文件
-    cp -f binaries/kubernetes/{kubelet,kubectl} /data/kubernetes/bin/ &&\
-    chmod 755 /data/kubernetes/bin/{kubelet,kubectl} &&\
-    ln -sf /data/kubernetes/bin/kubectl /usr/local/bin/kubectl
+    if [ ! -f /data/kubernetes/bin/kubectl ];then
+      cp -f binaries/kubernetes/kubectl /data/kubernetes/bin/ &&\
+      chmod 755 /data/kubernetes/bin/kubectl &&\
+      ln -sf /data/kubernetes/bin/kubectl /usr/local/bin/kubectl
+    fi
+    if [ ! -f /data/kubernetes/bin/kube-prompt ];then
+      cp -f binaries/kubernetes/kube-prompt /data/kubernetes/bin/ &&\
+      chmod 755 /data/kubernetes/bin/kube-prompt &&\
+      ln -sf /data/kubernetes/bin/kube-prompt /usr/local/bin/kube-prompt
+    fi
+    cp -f binaries/kubernetes/kubelet /data/kubernetes/bin/ &&\
+    chmod 755 /data/kubernetes/bin/kubelet
     binaries_install_check=$?
     log_result "部署Kubelet二进制程序文件" "${binaries_install_check}"
     # 部署证书
@@ -233,8 +242,20 @@ kubelet(){
   # 远程部署
   else
     # 部署二进制程序文件
-    expect_ssh "scp -pq -P${dst_port} binaries/kubernetes/{kubelet,kubectl} root@${dst_host}:/data/kubernetes/bin/" "${dst_password}" "${Node_Log}" &&\
-    expect_ssh "ssh -p${dst_port} root@${dst_host} 'chmod 755 /data/kubernetes/bin/{kubelet,kubectl} && ln -sf /data/kubernetes/bin/kubectl /usr/local/bin/kubectl'" "${dst_password}" "${Node_Log}"
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'if [ ! -f /data/kubernetes/bin/kubectl ];then /bin/false;else /bin/true;fi'" "${dst_password}" "${Node_Log}"
+    kubectl_check=$?
+    if [ ${kubectl_check} -ne 0 ];then
+      expect_ssh "scp -pq -P${dst_port} binaries/kubernetes/kubectl root@${dst_host}:/data/kubernetes/bin/" "${dst_password}" "${Node_Log}" &&\
+      expect_ssh "ssh -p${dst_port} root@${dst_host} 'chmod 755 /data/kubernetes/bin/kubectl && ln -sf /data/kubernetes/bin/kubectl /usr/local/bin/kubectl'" "${dst_password}" "${Node_Log}"
+    fi
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'if [ ! -f /data/kubernetes/bin/kube-prompt ];then /bin/false;else /bin/true;fi'" "${dst_password}" "${Node_Log}"
+    kubeprompt_check=$?
+    if [ ${kubeprompt_check} -ne 0 ];then
+      expect_ssh "scp -pq -P${dst_port} binaries/kubernetes/kube-prompt root@${dst_host}:/data/kubernetes/bin/" "${dst_password}" "${Node_Log}" &&\
+      expect_ssh "ssh -p${dst_port} root@${dst_host} 'chmod 755 /data/kubernetes/bin/kube-prompt && ln -sf /data/kubernetes/bin/kube-prompt /usr/local/bin/kube-prompt'" "${dst_password}" "${Node_Log}"
+    fi
+    expect_ssh "scp -pq -P${dst_port} binaries/kubernetes/kubelet root@${dst_host}:/data/kubernetes/bin/" "${dst_password}" "${Node_Log}" &&\
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'chmod 755 /data/kubernetes/bin/kubelet'" "${dst_password}" "${Node_Log}"
     binaries_install_check=$?
     log_result "部署Kubelet二进制程序文件" "${binaries_install_check}"
     # 部署证书
