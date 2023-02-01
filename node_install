@@ -242,13 +242,13 @@ kubelet(){
   # 远程部署
   else
     # 部署二进制程序文件
-    expect_ssh "ssh -p${dst_port} root@${dst_host} 'if [ ! -f /data/kubernetes/bin/kubectl ];then /bin/false;else /bin/true;fi'" "${dst_password}" "${Node_Log}"
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'if [ -f /data/kubernetes/bin/kubectl ];then /bin/true;else /bin/false;fi'" "${dst_password}" "${Node_Log}"
     kubectl_check=$?
     if [ ${kubectl_check} -ne 0 ];then
       expect_ssh "scp -pq -P${dst_port} binaries/kubernetes/kubectl root@${dst_host}:/data/kubernetes/bin/" "${dst_password}" "${Node_Log}" &&\
       expect_ssh "ssh -p${dst_port} root@${dst_host} 'chmod 755 /data/kubernetes/bin/kubectl && ln -sf /data/kubernetes/bin/kubectl /usr/local/bin/kubectl'" "${dst_password}" "${Node_Log}"
     fi
-    expect_ssh "ssh -p${dst_port} root@${dst_host} 'if [ ! -f /data/kubernetes/bin/kube-prompt ];then /bin/false;else /bin/true;fi'" "${dst_password}" "${Node_Log}"
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'if [ -f /data/kubernetes/bin/kube-prompt ];then /bin/true;else /bin/false;fi'" "${dst_password}" "${Node_Log}"
     kubeprompt_check=$?
     if [ ${kubeprompt_check} -ne 0 ];then
       expect_ssh "scp -pq -P${dst_port} binaries/kubernetes/kube-prompt root@${dst_host}:/data/kubernetes/bin/" "${dst_password}" "${Node_Log}" &&\
