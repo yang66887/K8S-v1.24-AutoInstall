@@ -12,6 +12,7 @@
 
 - 组件版本：
   - Kubernetes Version: v1.24.8
+  - Kube-prompt Version: v1.0.11
   - Etcd Version: v3.5.6
   - Docker-CE Version: v20.10.21
   - CRI-Dockerd Version: v0.2.6
