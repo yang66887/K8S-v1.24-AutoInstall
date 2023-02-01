@@ -172,9 +172,10 @@ kube_apiserver(){
   # 本机部署
   if [ "X${dst_host}" == "X${local_ip}" ];then
     # 部署二进制程序文件
-    cp -f binaries/kubernetes/{kube-apiserver,kubectl} /data/kubernetes/bin/ &&\
-    chmod 755 /data/kubernetes/bin/{kube-apiserver,kubectl} &&\
-    ln -sf /data/kubernetes/bin/kubectl /usr/local/bin/kubectl
+    cp -f binaries/kubernetes/{kube-apiserver,kubectl,kube-prompt} /data/kubernetes/bin/ &&\
+    chmod 755 /data/kubernetes/bin/{kube-apiserver,kubectl,kube-prompt} &&\
+    ln -sf /data/kubernetes/bin/kubectl /usr/local/bin/kubectl &&\
+    ln -sf /data/kubernetes/bin/kube-prompt /usr/local/bin/kube-prompt
     binaries_install_check=$?
     log_result "部署Kube-apiserver二进制程序文件" "${binaries_install_check}"
     # 部署证书
@@ -206,8 +207,8 @@ kube_apiserver(){
   # 远程部署
   else
     # 部署二进制程序文件
-    expect_ssh "scp -pq -P${dst_port} binaries/kubernetes/{kube-apiserver,kubectl} root@${dst_host}:/data/kubernetes/bin/" "${dst_password}" "${Master_Log}" &&\
-    expect_ssh "ssh -p${dst_port} root@${dst_host} 'chmod 755 /data/kubernetes/bin/{kube-apiserver,kubectl} && ln -sf /data/kubernetes/bin/kubectl /usr/local/bin/kubectl'" "${dst_password}" "${Master_Log}"
+    expect_ssh "scp -pq -P${dst_port} binaries/kubernetes/{kube-apiserver,kubectl,kube-prompt} root@${dst_host}:/data/kubernetes/bin/" "${dst_password}" "${Master_Log}" &&\
+    expect_ssh "ssh -p${dst_port} root@${dst_host} 'chmod 755 /data/kubernetes/bin/{kube-apiserver,kubectl,kube-prompt} && ln -sf /data/kubernetes/bin/kubectl /usr/local/bin/kubectl && ln -sf /data/kubernetes/bin/kube-prompt /usr/local/bin/kube-prompt'" "${dst_password}" "${Master_Log}"
     binaries_install_check=$?
     log_result "部署Kube-apiserver二进制程序文件" "${binaries_install_check}"
     # 部署证书
