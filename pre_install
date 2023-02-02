@@ -63,10 +63,12 @@ if [ ${#MASTER[@]} -eq 1 ];then
   # 单机部署
   master_cluster=0
   api_addr="${MASTER[master-1]}"
+  api_port=6443
 else
   # 集群部署
   master_cluster=1
   api_addr="${v_ip}"
+  api_port=16443
 fi
 
 # 远程部署通道
@@ -771,21 +773,21 @@ Create_Kubectl_config(){
   cd temp_install/master/ssl
   if [ ! -f ../kube.config ];then
     # kubectl
-    ../../../binaries/kubernetes/kubectl config set-cluster kubernetes --certificate-authority=ca.pem --embed-certs=true --server=https://${api_addr}:16443 --kubeconfig=../kube.config &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config set-cluster kubernetes --certificate-authority=ca.pem --embed-certs=true --server=https://${api_addr}:${api_port} --kubeconfig=../kube.config &>/dev/null &&\
     ../../../binaries/kubernetes/kubectl config set-credentials clusteradmin --client-certificate=kubectl.pem --client-key=kubectl-key.pem --embed-certs=true --kubeconfig=../kube.config &>/dev/null &&\
     ../../../binaries/kubernetes/kubectl config set-context kubernetes --cluster=kubernetes --user=clusteradmin --kubeconfig=../kube.config &>/dev/null &&\
     ../../../binaries/kubernetes/kubectl config use-context kubernetes --kubeconfig=../kube.config &>/dev/null
   fi
   if [ ! -f ../kube-controller-manager.kubeconfig ];then
     # kube-controller-manager
-    ../../../binaries/kubernetes/kubectl config set-cluster kubernetes --certificate-authority=ca.pem --embed-certs=true --server=https://${api_addr}:16443 --kubeconfig=../kube-controller-manager.kubeconfig &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config set-cluster kubernetes --certificate-authority=ca.pem --embed-certs=true --server=https://${api_addr}:${api_port} --kubeconfig=../kube-controller-manager.kubeconfig &>/dev/null &&\
     ../../../binaries/kubernetes/kubectl config set-credentials kube-controller-manager --client-certificate=kube-controller-manager.pem --client-key=kube-controller-manager-key.pem --embed-certs=true --kubeconfig=../kube-controller-manager.kubeconfig &>/dev/null &&\
     ../../../binaries/kubernetes/kubectl config set-context default --cluster=kubernetes --user=kube-controller-manager --kubeconfig=../kube-controller-manager.kubeconfig &>/dev/null &&\
     ../../../binaries/kubernetes/kubectl config use-context default --kubeconfig=../kube-controller-manager.kubeconfig &>/dev/null
   fi
   if [ ! -f ../kube-scheduler.kubeconfig ];then
     # kube-scheduler
-    ../../../binaries/kubernetes/kubectl config set-cluster kubernetes --certificate-authority=ca.pem --embed-certs=true --server=https://${api_addr}:16443 --kubeconfig=../kube-scheduler.kubeconfig &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config set-cluster kubernetes --certificate-authority=ca.pem --embed-certs=true --server=https://${api_addr}:${api_port} --kubeconfig=../kube-scheduler.kubeconfig &>/dev/null &&\
     ../../../binaries/kubernetes/kubectl config set-credentials kube-scheduler --client-certificate=kube-scheduler.pem --client-key=kube-scheduler-key.pem --embed-certs=true --kubeconfig=../kube-scheduler.kubeconfig &>/dev/null &&\
     ../../../binaries/kubernetes/kubectl config set-context default --cluster=kubernetes --user=kube-scheduler --kubeconfig=../kube-scheduler.kubeconfig &>/dev/null &&\
     ../../../binaries/kubernetes/kubectl config use-context default --kubeconfig=../kube-scheduler.kubeconfig &>/dev/null
@@ -795,7 +797,7 @@ Create_Kubectl_config(){
   cd temp_install/node/ssl
   if [ ! -f ../kube-proxy.kubeconfig ];then
     # kube-proxy
-    ../../../binaries/kubernetes/kubectl config set-cluster kubernetes --certificate-authority=ca.pem --embed-certs=true --server=https://${api_addr}:16443 --kubeconfig=../kube-proxy.kubeconfig &>/dev/null &&\
+    ../../../binaries/kubernetes/kubectl config set-cluster kubernetes --certificate-authority=ca.pem --embed-certs=true --server=https://${api_addr}:${api_port} --kubeconfig=../kube-proxy.kubeconfig &>/dev/null &&\
     ../../../binaries/kubernetes/kubectl config set-credentials kube-proxy --client-certificate=kube-proxy.pem --client-key=kube-proxy-key.pem --embed-certs=true --kubeconfig=../kube-proxy.kubeconfig &>/dev/null &&\
     ../../../binaries/kubernetes/kubectl config set-context default --cluster=kubernetes --user=kube-proxy --kubeconfig=../kube-proxy.kubeconfig &>/dev/null &&\
     ../../../binaries/kubernetes/kubectl config use-context default --kubeconfig=../kube-proxy.kubeconfig &>/dev/null
@@ -942,7 +944,7 @@ apiVersion: v1
 clusters:
 - cluster:
     certificate-authority: /data/kubernetes/ssl/ca.pem
-    server: https://${api_addr}:16443
+    server: https://${api_addr}:${api_port}
   name: kubernetes
 contexts:
 - context:
