@@ -1,11 +1,11 @@
 #!/bin/bash
 
-if [ "X$(cat /proc/version|awk '{print $4}'|awk -F. '{print $(NF-1)}')" == "Xcentos" ];then
-  local_release='CentOS7_9'
-elif [ "X$(cat /proc/version|awk '{print $6}'|sed 's/(//g')" == "XUbuntu" ];then
-  local_release='Ubuntu22_04'
+if [ -f /etc/redhat-release ];then
+  local_release="$(cat /etc/redhat-release|awk '{print $1$4}'|sed -e 's/\.[0-9]\{4\}//g' -e 's/\./_/g')"
+elif [ $(uname -a|grep Ubuntu|wc -l) -eq 1 ];then
+  local_release="$(cat /etc/issue|sed '/^$/d'|awk -F. '{print $1FS$2}'|sed -e 's/ //g' -e 's/\./_/g')"
 else
-  echo "不支持当前操作系统，请使用CentOS 7.9或者Ubuntu 22.04操作系统的服务器执行部署"
+  echo "不支持当前操作系统，建议使用CentOS 7.9或者Ubuntu 22.04操作系统的服务器执行部署"
   exit 2
 fi
 token="$(head -c 16 /dev/urandom|od -An -t x|tr -d ' ')"
@@ -115,7 +115,7 @@ Binaries_and_Dependencies(){
   fi
 # 安装expect
   case ${local_release} in
-    CentOS7_9)
+    CentOS7_9|CentOS7_8|CentOS7_7|CentOS7_6)
       if [ $(which expect &>/dev/null;echo $?) -ne 0 ];then
         tar xf rpms/others/expect.tar.gz -C rpms/others
         rpm -Uvh rpms/others/expect*.rpm rpms/others/tcl*.rpm &>/dev/null
