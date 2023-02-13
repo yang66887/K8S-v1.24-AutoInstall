@@ -21,7 +21,7 @@ fi
 
 server_install(){
   case ${server_release} in
-    CentOS7_9)
+    CentOS7_9|CentOS7_8|CentOS7_7|CentOS7_6)
       # 本机部署
       if [ "X${server_addr}" == "X${local_ip}" ];then
         # 检查NFS是否安装
@@ -147,7 +147,7 @@ client_install(){
     client_password=$(eval echo \${"$client_name"[password]})
     client_release=$(eval echo \${"$client_name"[release]})
     case ${client_release} in
-      CentOS7_9)
+      CentOS7_9|CentOS7_8|CentOS7_7|CentOS7_6)
         # 本机部署
         if [ "X${client}" == "X${local_ip}" ];then
           # 检查NFS是否安装
