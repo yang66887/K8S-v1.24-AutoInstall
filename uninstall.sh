@@ -309,7 +309,7 @@ node_uninstall(){
     cni_uninstall_check=$?
     log_result "卸载cni-plugins" ${cni_uninstall_check}
     case ${dst_release} in
-      CentOS7_9)
+      CentOS7_9|CentOS7_8|CentOS7_7|CentOS7_6)
         bash <temp_uninstall/docker.rh.uninstall &>${Uninstall_Log}
         docker_uninstall_check=$?
         log_result "卸载docker" ${docker_uninstall_check}
@@ -342,7 +342,7 @@ node_uninstall(){
     cni_uninstall_check=$?
     log_result "卸载cni-plugins" ${cni_uninstall_check}
     case ${dst_release} in
-      CentOS7_9)
+      CentOS7_9|CentOS7_8|CentOS7_7|CentOS7_6)
         expect_ssh "scp -pq -P${dst_port} temp_uninstall/docker.rh.uninstall root@${dst_addr}:/root" "${dst_password}" "${Uninstall_Log}"
         expect_ssh "ssh -p${dst_port} root@${dst_addr} 'cd /root;bash <docker.rh.uninstall;rm -f docker.rh.uninstall'" "${dst_password}" "${Uninstall_Log}"
         docker_uninstall_check=$?
@@ -381,7 +381,7 @@ master_uninstall(){
       rm -rf /data/kubernetes &>${Uninstall_Log}
     fi
     case ${dst_release} in
-      CentOS7_9)
+      CentOS7_9|CentOS7_8|CentOS7_7|CentOS7_6)
         bash <temp_uninstall/keepalived.rh.uninstall &>${Uninstall_Log}
         keepalived_uninstall_check=$?
         log_result "卸载keepalived" ${keepalived_uninstall_check}
@@ -418,7 +418,7 @@ master_uninstall(){
     fi
     expect_ssh "ssh -p${dst_port} root@${dst_addr} 'test ! -f /data/kubernetes/bin/kube-apiserver && rm -rf /data/kubernetes'" "${dst_password}" "${Uninstall_Log}"
     case ${dst_release} in
-      CentOS7_9)
+      CentOS7_9|CentOS7_8|CentOS7_7|CentOS7_6)
         expect_ssh "scp -pq -P${dst_port} temp_uninstall/keepalived.rh.uninstall root@${dst_addr}:/root" "${dst_password}" "${Uninstall_Log}"
         expect_ssh "ssh -p${dst_port} root@${dst_addr} 'cd /root;bash <keepalived.rh.uninstall;rm -f keepalived.rh.uninstall'" "${dst_password}" "${Uninstall_Log}"
         keepalived_uninstall_check=$?
@@ -463,7 +463,7 @@ nfs_uninstall(){
   # 本机卸载
   if [ "X${dst_host}" == "X${local_host}" ];then
     case ${dst_release} in
-      CentOS7_9)
+      CentOS7_9|CentOS7_8|CentOS7_7|CentOS7_6)
         bash <temp_uninstall/nfs.rh.uninstall &>${Uninstall_Log}
         nfs_uninstall_check=$?
         log_result "卸载nfs" ${nfs_uninstall_check}
@@ -479,7 +479,7 @@ nfs_uninstall(){
     dst_port=$(eval echo \${"$dst_host"[port]})
     dst_password=$(eval echo \${"$dst_host"[password]})
     case ${dst_release} in
-      CentOS7_9)
+      CentOS7_9|CentOS7_8|CentOS7_7|CentOS7_6)
         expect_ssh "scp -pq -P${dst_port} temp_uninstall/nfs.rh.uninstall root@${dst_addr}:/root" "${dst_password}" "${Uninstall_Log}"
         expect_ssh "ssh -p${dst_port} root@${dst_addr} 'cd /root;bash <nfs.rh.uninstall;rm -f nfs.rh.uninstall'" "${dst_password}" "${Uninstall_Log}"
         nfs_uninstall_check=$?
