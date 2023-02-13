@@ -10,7 +10,7 @@ dependencies(){
   dst_release=$4
 
   case ${dst_release} in
-    CentOS7_9)
+    CentOS7_9|CentOS7_8|CentOS7_7|CentOS7_6)
       mkdir temp_install/master/${dst_host}.rpms
       cat rpms/others/dependencies.tar.gz0*|tar zx -C temp_install/master/${dst_host}.rpms
       tar xf rpms/others/net-tools.tar.gz -C temp_install/master/${dst_host}.rpms
@@ -108,7 +108,7 @@ keepalived(){
   # 本机安装
   if [ "X${dst_host}" == "X${local_ip}" ];then
     case ${dst_release} in
-      CentOS7_9)
+      CentOS7_9|CentOS7_8|CentOS7_7|CentOS7_6)
         cp sources/keepalived.tar.gz temp_install/master
         cd temp_install/master
         tar xf keepalived.tar.gz
@@ -136,7 +136,7 @@ keepalived(){
   else
   # 远程安装
     case ${dst_release} in
-      CentOS7_9)
+      CentOS7_9|CentOS7_8|CentOS7_7|CentOS7_6)
         expect_ssh "scp -pq -P${dst_port} sources/keepalived.tar.gz temp_install/master/{keepalived.conf.${dst_host},check_nginx.sh,keepalived.install} root@${dst_host}:/root" "${dst_password}" "${Master_Log}"
         keepalived_scp_check=$?
         if [ ${keepalived_scp_check} -eq 0 ];then
