@@ -17,7 +17,7 @@ docker_install(){
     bash <temp_install/node/sysctl.config
     # 安装docker
     case ${dst_release} in
-      CentOS7_9)
+      CentOS7_9|CentOS7_8|CentOS7_7|CentOS7_6)
         mkdir temp_install/node/${dst_host}.rpms
         cat rpms/docker-ce/docker-ce.tar.gz0*|tar zx -C temp_install/node/${dst_host}.rpms
         bash dep_check temp_install/node/${dst_host}.rpms
@@ -63,7 +63,7 @@ docker_install(){
   else
   # 远程安装
     case ${dst_release} in
-      CentOS7_9)
+      CentOS7_9|CentOS7_8|CentOS7_7|CentOS7_6)
         mkdir temp_install/node/${dst_host}.rpms
         cat rpms/docker-ce/docker-ce.tar.gz0*|tar zx -C temp_install/node/${dst_host}.rpms
         expect_ssh "scp -pq -P${dst_port} dep_check temp_install/node/${dst_host}.rpms/*.rpm temp_install/node/{daemon.json,sysctl.config} root@${dst_host}:/root" "${dst_password}" "${Node_Log}"
