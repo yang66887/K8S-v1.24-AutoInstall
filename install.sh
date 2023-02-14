@@ -78,8 +78,6 @@ EOF
   source apply_pod --cluster
 }
 
-
-
 if [ "X$1" != "X--cluster" -a "X$1" != "X--initialize" ];then
   source pre_install
   # 主机名设置
