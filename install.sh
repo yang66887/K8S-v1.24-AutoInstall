@@ -1,5 +1,13 @@
 #!/bin/bash
 
+# 检查执行参数
+declare -A Actions
+Actions=([--initialize]=6 [--local-etcd]=5 [--local-master]=4 [--local-node]=3 [--local-nfs]=2 [--apply-pod]=1 [--cluster]=0)
+if [ "X${Actions[$1]}" == "X" ];then
+  echo Error.
+  exit 1
+fi
+
 source actions
 source config
 
@@ -69,6 +77,8 @@ EOF
   source nfs_install --cluster
   source apply_pod --cluster
 }
+
+
 
 if [ "X$1" != "X--cluster" -a "X$1" != "X--initialize" ];then
   source pre_install
