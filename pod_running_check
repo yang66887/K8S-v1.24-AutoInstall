@@ -42,7 +42,7 @@ do
     kuboard)
       if [ "X$(kubectl get pod -n kube-system|grep ^kuboard|awk '{print $3}')" == "XRunning" ];then
         action "启动Pod: ${pod_name}" /bin/true
-        if [ "X${v_ip}" != "X" -a $(grep "^HOST[0-9]\{1,\}=.*master.*node" config|wc -l) -ne 0 ];then
+        if [ ${master_cluster} -eq 1 -a $(grep "^HOST[0-9]\{1,\}=.*master.*node" config|wc -l) -ne 0 ];then
           echo -e "Kuboard访问地址: \033[33mhttp://${v_ip}:${kuboard_port}\033[0m"
         else
           echo -e "Kuboard访问地址: \033[33mhttp://[任意Node节点IP地址]:${kuboard_port}\033[0m"
@@ -54,7 +54,7 @@ do
     dashboard)
       if [ $(kubectl get pod -o wide -A|grep ^kubernetes-dashboard|grep Running|wc -l) -eq 2 ];then
         action "启动Pod: ${pod_name}" /bin/true
-        if [ "X${v_ip}" != "X" -a $(grep "^HOST[0-9]\{1,\}=.*master.*node" config|wc -l) -ne 0 ];then
+        if [ ${master_cluster} -eq 1 -a $(grep "^HOST[0-9]\{1,\}=.*master.*node" config|wc -l) -ne 0 ];then
           echo -e "Dashboard访问地址: \033[33mhttps://${v_ip}:${dashboard_port}\033[0m"
         else
           echo -e "Dashboard访问地址: \033[33mhttps://[任意Node节点IP地址]:${dashboard_port}\033[0m"
