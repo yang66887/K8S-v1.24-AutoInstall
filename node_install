@@ -18,7 +18,9 @@ docker_install(){
     # 安装docker
     case ${dst_release} in
       CentOS7_9|CentOS7_8|CentOS7_7|CentOS7_6)
-        mkdir temp_install/node/${dst_host}.rpms
+        if [ -d temp_install/node/${dst_host}.rpms ];then
+          mkdir temp_install/node/${dst_host}.rpms
+        fi
         cat rpms/docker-ce/docker-ce.tar.gz0*|tar zx -C temp_install/node/${dst_host}.rpms
         bash dep_check temp_install/node/${dst_host}.rpms
         rpm -Uvh temp_install/node/${dst_host}.rpms/*.rpm &>/dev/null
